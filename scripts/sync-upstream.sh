@@ -22,8 +22,9 @@ if ! git merge-base --is-ancestor "$baseline" "$incoming"; then
     printf 'Upstream history diverges from the imported baseline for %s.\n' "$branch" >&2
     exit 1
 fi
-if ! git diff --quiet "$base" "$incoming" -- .github AGENTS.md LICENSE.md NOTICE.md; then
-    printf 'Upstream changed contributor automation or legal files on %s. Review the diff manually.\n' "$branch" >&2
+if ! git diff --quiet "$base" "$incoming" -- .github AGENTS.md LICENSE.md NOTICE.md \
+    .dockerignore all_os_openedr deploy integrations packaging scripts; then
+    printf 'Upstream changed protected project paths on %s. Review the diff manually.\n' "$branch" >&2
     exit 1
 fi
 git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
