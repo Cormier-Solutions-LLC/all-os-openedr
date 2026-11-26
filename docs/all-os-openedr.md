@@ -59,6 +59,8 @@ Validate the configuration, generate a benign observation, and query the dedicat
 
 For rollback, stop the dedicated forwarder and preserve its queue and position file. Restore the prior pipeline and manager rule configuration, then remove the endpoint stanza from the affected Wazuh agents and validate their configuration. A cluster operator can detach the optional retention policy when preserving the indexed records is required. Keep the existing Wazuh alert route in place during the change.
 
+An isolated lab used Wazuh agent, manager, and indexer 4.14.11 with Logstash OSS 8.19.23 and OpenSearch output plugin 2.1.1. It verified duplicate handling, endpoint log rotation, the dedicated roles, and retention policy attachment. Twelve synthetic alerts queued during an indexer outage were indexed once each after a forced Logstash restart and indexer recovery. The production Wazah rollout and scheduled retention expiry remain to be verified.
+
 ## Kubernetes management preview
 
 The stateless API serves recent OpenEDR alert fields from the dedicated OpenSearch index. The chart uses a private ClusterIP service, a disruption budget and multi-node scheduling. Use Kubernetes 1.30 or later with topology-spread node inclusion policies enabled. Keep at least two eligible worker nodes and enough allocatable capacity for a surge replica during an upgrade. Nodes with untolerated taints are excluded from the spread calculation. Before sending a bearer token across the network, use port forwarding for local testing or place a TLS-authenticating proxy in front of the service and apply your network policies.

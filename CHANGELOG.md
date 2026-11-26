@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Add dedicated OpenSearch mappings, narrowly scoped forwarding and search roles, and an example retention policy.
 - Route identical Wazuh alert replays by their original observation date and event ID. Provide a bounded persistent queue for interruption recovery.
+- Verify the dedicated index route in a disposable Wazuh 4.14.11 lab, including restart recovery, restricted roles, and retention policy attachment.
+- Run maintainer PR checks from the protected base workflow under the public fork's maintainer-only Actions policy.
 
 ## 0.2.0
 
