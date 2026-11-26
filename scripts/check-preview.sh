@@ -8,6 +8,7 @@ trap 'rm -rf -- "$work"' EXIT
 python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
 import json
+import re
 import sys
 from argparse import ArgumentTypeError
 from pathlib import Path
@@ -77,6 +78,31 @@ with TemporaryDirectory() as temporary:
         else:
             raise AssertionError("Accepted code writable outside the trusted policy")
 
+    archive = Path(temporary) / "protected"
+    archive.mkdir()
+    archive_file = archive / "ledger"
+    archive_file.touch()
+    scratch = Path(temporary) / "scratch"
+    scratch.mkdir()
+    alias = Path(temporary) / "alias"
+    alias.symlink_to(archive, target_is_directory=True)
+    assert policy_path(str(alias), directory=True) == archive
+    policy = render_profile("all-os-openedr-workload", [approved], [], [], [],
+                            protected_trees=[archive], write_directories=[scratch])
+    assert f'  "{archive}/**" r,' in policy
+    assert f'  audit deny "{archive}/**" wl,' in policy
+    assert f'  audit deny "{archive}/**" a,' in policy
+    assert f'  "{scratch}/*" rw,' in policy and f'"{scratch}/**"' not in policy
+    for writes, directories in (([archive_file], []), ([], [archive]), ([], [archive.parent]),
+                                ([], [approved.parent])):
+        try:
+            render_profile("all-os-openedr-workload", [approved], [], [], writes,
+                           protected_trees=[archive], write_directories=directories)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Accepted overlapping protected or approved code paths")
+
 class InstalledPlugin:
     def load(self):
         return Plugin("sink", API_VERSION, lambda text: text.upper())
@@ -115,6 +141,16 @@ for rule_id, key in (
 prevention = audit_rules.find("rule[@id='110112']")
 assert prevention.findtext("if_sid") == "80700"
 assert prevention.findtext("group") == "openedr_execution_prevention,"
+file_protection = audit_rules.find("rule[@id='110113']")
+assert file_protection.findtext("if_sid") == "80700"
+assert file_protection.findtext("group") == "openedr_file_protection,"
+file_rule = re.compile(file_protection.findtext("match"))
+record = ('type=AVC msg=audit(1795708221.152:129): apparmor="DENIED" operation="open" '
+          'class="file" profile="all-os-openedr-share" name="/srv/smb/archive/ledger"')
+for mask in ("w", "a", "l", "c", "d", "wc"):
+    assert file_rule.search(f'{record} denied_mask="{mask}"')
+assert not file_rule.search(f'{record} denied_mask="r" type=SYSCALL denied_mask="w"')
+assert not file_rule.search(record.replace('class="file"', 'class="net"') + ' denied_mask="w"')
 dedicated_indices = ["openedr-alerts-v1-*"]
 template = json.loads((integration / "openedr-index-template.json").read_text())
 assert template["index_patterns"] == dedicated_indices

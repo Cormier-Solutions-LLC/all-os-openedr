@@ -23,4 +23,10 @@
     <description>OpenEDR AppArmor workload blocked an executable before launch</description>
     <group>openedr_execution_prevention,</group>
   </rule>
+  <rule id="110113" level="8">
+    <if_sid>80700</if_sid>
+    <match type="pcre2">^(?:node=\S+ )?type=AVC msg=audit\([0-9]+\.[0-9]+:[0-9]+\):\s+apparmor="DENIED"\s+operation="[^"]+"\s+class="file"(?:(?!\s+type=)[^\x1d])*?\sprofile="all-os-openedr-[a-z0-9][a-z0-9-]{0,47}"(?:(?!\s+type=)[^\x1d])*?\sdenied_mask="[a-z]*[wacdl][a-z]*"</match>
+    <description>OpenEDR AppArmor workload blocked a file mutation</description>
+    <group>openedr_file_protection,</group>
+  </rule>
 </group>
