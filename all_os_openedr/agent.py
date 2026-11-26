@@ -100,7 +100,9 @@ def main():
         parser.error("--filesystem applies to linux-file-provenance")
     os.umask(0o027)
     try:
-        collector_options = {"filesystem": options.filesystem} if options.filesystem is not None else {}
+        collector_options = (
+            {"filesystem": options.filesystem, "output": options.output} if options.filesystem is not None else {}
+        )
         collector = PLUGINS.create(options.collector, "collector", **collector_options)
         sink = PLUGINS.create(options.sink, "sink", output=options.output)
         stream = getattr(collector, "stream", None)

@@ -190,10 +190,11 @@ def visible_text(raw):
 
 
 class FileProvenance:
-    def __init__(self, filesystem):
+    def __init__(self, filesystem, output):
         self.filesystem = Path(filesystem).resolve(strict=True)
         if not self.filesystem.is_dir() or not self.filesystem.is_mount():
             raise ValueError("select the root of an explicitly mounted filesystem")
+        self.output = Path(output)
         self.host = socket.gethostname()
         self.boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         self.stream_id = uuid.uuid4().hex
@@ -231,7 +232,10 @@ class FileProvenance:
             os.close(fd)
 
     def directory_entry(self, handle, prefix):
-        details = {f"{prefix}_parent_id": handle.identity(self.boot_id, self.device)}
+        # A name of "." identifies the directory itself, rather than its parent.
+        details = {}
+        if handle.name != b".":
+            details[f"{prefix}_parent_id"] = handle.identity(self.boot_id, self.device)
         if handle.name is None:
             return details
         details[f"{prefix}_name"] = visible_text(handle.name)
@@ -241,7 +245,9 @@ class FileProvenance:
         if parent is not None:
             path = parent if handle.name == b"." else os.path.join(parent, handle.name)
             details[f"{prefix}_path"] = visible_text(path)
-            details[f"{prefix}_path_source"] = "reported_name_resolved_parent"
+            details[f"{prefix}_path_source"] = (
+                "observed_directory_handle" if handle.name == b"." else "reported_name_resolved_parent"
+            )
         return details
 
     def materialize(self, mask, pid, records):
@@ -283,11 +289,20 @@ class FileProvenance:
         finally:
             os.close(fd)
 
+    def writes_to_watched_filesystem(self):
+        target = self.output.resolve()
+        try:
+            return target.stat().st_dev == self.device
+        except FileNotFoundError:
+            return target.parent.stat().st_dev == self.device
+
     def stream(self):
         # Linux 6.12 open_by_handle_at uses fdget(), which rejects an O_PATH mount descriptor.
         self.mount_fd = os.open(self.filesystem, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
         try:
             self.device = os.fstat(self.mount_fd).st_dev
+            if self.writes_to_watched_filesystem():
+                raise ValueError("file provenance logs require a different filesystem from the watch target")
             mount_id = fd_field(self.mount_fd, "mnt_id")
             if not mount_id:
                 raise ValueError("the selected filesystem has no visible mount ID")
@@ -305,6 +320,8 @@ class FileProvenance:
                         if not self.same_mount(mount_id):
                             yield [self.gap("file_watch_target_changed")]
                             raise ValueError("the watched mount changed")
+                        if self.writes_to_watched_filesystem():
+                            raise ValueError("file provenance logs moved onto the watched filesystem")
                     notifications = poller.poll(500)
                     if not notifications:
                         continue

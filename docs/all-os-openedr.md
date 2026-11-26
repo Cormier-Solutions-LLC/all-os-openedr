@@ -38,7 +38,7 @@ The dedicated OpenSearch template indexes process and parent identities, stream 
 
 The optional Debian file provenance service monitors an explicitly chosen filesystem recursively. It reports opens, accesses, modifications, metadata changes, closes, creations, deletions, execution opens, and renames. File IDs are derived from the boot, filesystem, and Linux file handle. Renames carry the kernel-reported source and destination names when both directory entries are available. Display paths use directory handles resolved at collection time. Use the file ID to follow a file through path changes.
 
-Choose a mounted filesystem dedicated to the data you want to observe. The service monitors the underlying filesystem instance, including activity through other mounts of that instance. Begin with a dedicated ext4 volume and confirm the expected event volume and permissions before enabling forwarding.
+Choose a mounted filesystem dedicated to the data you want to observe. The service monitors the underlying filesystem instance, including activity through other mounts of that instance. Keep the collector log and forwarding queues on a separate filesystem so the forwarding pipeline cannot generate more events from its own writes. Begin with a dedicated ext4 volume and confirm the expected event volume and permissions before enabling forwarding.
 
 ```sh
 printf 'OPENEDR_FILE_FILESYSTEM=/srv/openedr-provenance\n' |
