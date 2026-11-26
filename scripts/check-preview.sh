@@ -55,3 +55,4 @@ set -- --set image=example.invalid/manager:verification --set opensearchUrl=http
     --set opensearchSecret=indexer --set managementSecret=manager
 helm lint deploy/chart --strict "$@"
 helm template openedr deploy/chart "$@" > "$work/manifests.yaml"
+grep -q '^[[:space:]]*nodeTaintsPolicy: Honor$' "$work/manifests.yaml"

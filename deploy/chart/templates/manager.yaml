@@ -34,6 +34,7 @@ spec:
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: DoNotSchedule
           minDomains: 2
+          nodeTaintsPolicy: Honor
           labelSelector:
             matchLabels: {{ $labels | toJson }}
       containers:

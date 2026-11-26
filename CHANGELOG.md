@@ -4,6 +4,7 @@
 
 - Add RPM source builds for Enterprise Linux and Fedora, with container checks for Rocky Linux 9 and 10 and Fedora 44.
 - Require the maintainer identity again when a publication job is retried.
+- Exclude nodes with untolerated taints from Helm scheduling calculations so a rollout can place its surge replica.
 
 ## 0.1.0
 
