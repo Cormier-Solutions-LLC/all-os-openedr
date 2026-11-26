@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Add opt-in AppArmor execution allowlists for Debian 13 managed workloads. The kernel enforces the allowlist offline, and Wazuh can alert when the workload is denied an executable.
 - Add opt-in Debian 13 amd64 kernel Audit policy for protected-executable detection. An enrolled Wazuh agent can send the kernel event to a manager rule for operator investigation.
 - Provide optional Audit rules for successful login-session executions, including processes that exit between polling samples.
 

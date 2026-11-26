@@ -26,12 +26,14 @@ Priority: optional
 Architecture: all
 Maintainer: All OS OpenEDR maintainers <all-os-openedr@users.noreply.github.com>
 Depends: python3 (>= 3.10), init-system-helpers
-Suggests: auditd, wazuh-agent
-Description: OpenEDR process telemetry preview for Linux
+Suggests: apparmor, auditd, wazuh-agent
+Description: OpenEDR endpoint detection and protection preview for Linux
  The unprivileged collector writes local JSON process observations for Wazuh.
+ Opt-in policy generators support Linux Audit and AppArmor.
 EOF
 install -m 0644 "$root"/all_os_openedr/*.py "$stage/usr/lib/all-os-openedr/all_os_openedr/"
-install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" "$stage/usr/bin/"
+install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
+    "$root/packaging/debian/all-os-openedr-apparmor-policy" "$stage/usr/bin/"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/110110-openedr-execution_rules.xml" "$stage/usr/share/all-os-openedr/wazuh/"
 install -m 0644 "$root/packaging/debian/all-os-openedr.service" "$stage/usr/lib/systemd/system/"

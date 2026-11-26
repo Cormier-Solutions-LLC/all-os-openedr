@@ -15,6 +15,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from xml.etree import ElementTree
 
+from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import executable, login_uid, render_rules
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 
@@ -48,6 +49,33 @@ with TemporaryDirectory() as temporary:
         pass
     else:
         raise AssertionError("Accepted an executable path with a space")
+
+    approved = policy_path("/usr/bin/true")
+    data = policy_path(sys.argv[1])
+    profile = render_profile(profile_name("workload"), [approved], [], [data], [])
+    assert "profile all-os-openedr-workload {" in profile
+    assert "signal (receive) set=(hup, int, quit, abrt, kill, term, cont) peer=unconfined," in profile
+    assert "signal (send, receive) peer=all-os-openedr-workload," in profile
+    assert f'  "{approved}" rix,' in profile
+    assert f'  "{data}" r,' in profile
+    assert "*" not in profile and "ux" not in profile
+    for validator, candidate in (
+        (policy_path, str(invalid)),
+        (profile_name, "bad*"),
+    ):
+        try:
+            validator(candidate)
+        except ArgumentTypeError:
+            pass
+        else:
+            raise AssertionError(f"Accepted a nonliteral profile input {candidate!r}")
+    for executables, writes in (([policy_path(str(protected))], []), ([approved], [approved])):
+        try:
+            render_profile(profile_name("workload"), executables, [], [], writes)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Accepted code writable outside the trusted policy")
 
 class InstalledPlugin:
     def load(self):
@@ -84,6 +112,9 @@ for rule_id, key in (
     assert rule.findtext("field[@name='audit.type']") == "^SYSCALL$"
     assert rule.findtext("field[@name='audit.success']") == "^yes$"
     assert rule.findtext("field[@name='audit.key']") == f"^{key}$"
+prevention = audit_rules.find("rule[@id='110112']")
+assert prevention.findtext("if_sid") == "80700"
+assert prevention.findtext("group") == "openedr_execution_prevention,"
 dedicated_indices = ["openedr-alerts-v1-*"]
 template = json.loads((integration / "openedr-index-template.json").read_text())
 assert template["index_patterns"] == dedicated_indices
@@ -108,6 +139,7 @@ cmp NOTICE.md "$work/package/usr/share/doc/all-os-openedr/NOTICE.md"
 cmp LICENSE.md "$work/package/usr/share/doc/all-os-openedr/copyright"
 test -f "$work/package/usr/lib/systemd/system/all-os-openedr.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
+test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done

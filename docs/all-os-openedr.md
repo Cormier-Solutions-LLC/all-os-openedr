@@ -34,7 +34,44 @@ sudo auditctl -s
 
 Replace the example path and login UID with your policy values. The command only prints rules, so review them before installation. Audit uses the first matching rule. Reconcile these rules with your existing audit configuration, including any earlier suppress rules, broad execution rules, or immutable policy. If the protected executable is replaced or moved, verify the watches against the new executable. To also collect successful executions from logged-in accounts at or above a given UID, pass `--observe-login-execs-from UID`. That option can generate substantial event volume. Monitor the Audit `lost` counter. Audit can record command-line arguments, so restrict access and set retention for both Audit logs and Wazuh data.
 
-On the enrolled endpoint, merge the packaged `/usr/share/all-os-openedr/wazuh/audit-localfile.xml` into the Wazuh agent configuration if the agent does not already collect `/var/log/audit/audit.log` with the `audit` format. On the manager, install the packaged `110110-openedr-execution_rules.xml` in its local rules directory, confirm rule IDs 110110 and 110111 are available, and validate the manager configuration. Restart the agent and manager after changing their respective configurations. An unexpected login UID launching the protected executable raises rule 110110. Optional session execution events use rule 110111. Both use the standard Wazuh alert path.
+On the enrolled endpoint, merge the packaged `/usr/share/all-os-openedr/wazuh/audit-localfile.xml` into the Wazuh agent configuration if the agent does not already collect `/var/log/audit/audit.log` with the `audit` format. On the manager, install the packaged `110110-openedr-execution_rules.xml` in its local rules directory, confirm rule IDs 110110 through 110112 are available, and validate the manager configuration. Restart the agent and manager after changing their respective configurations. An unexpected login UID launching the protected executable raises rule 110110. Optional session execution events use rule 110111. A denied execution from an OpenEDR AppArmor profile raises rule 110112 with the original audit record as evidence.
+
+### Pre-execution control for a managed workload
+
+On a Debian 13 endpoint with AppArmor enabled, start a systemd service through `aa-exec --immediate` under a dedicated unprivileged user. The kernel checks the service and its descendants against the loaded allowlist before each executable launch, including while the management backend is unavailable. Enforcement applies within the assigned service context. Profile creation and attachment are explicit administrator actions.
+
+Install `apparmor` and review the profile before loading it. The example uses a statically linked executable. Pass `--allow-library PATH` for each trusted library needed by a dynamically linked workload and `--read-file PATH` for needed input files. Pass `--write-file PATH` for individual existing output files. Use administrator-controlled directories for all approved code and avoid allowing generic interpreters or tools that can execute user-provided code. Use a separate profile and isolated VM for analysis of unknown candidates.
+
+The profile restricts writes to the default journald socket. This example sends workload output to a dedicated file. Replace `workload-user` with the service account and its group in the examples. Linux Audit continues to record kernel denials separately.
+
+```sh
+sudo install -d -o root -g workload-user -m 0750 /var/log/all-os-openedr-managed
+sudo touch /var/log/all-os-openedr-managed/workload.log
+sudo chown root:workload-user /var/log/all-os-openedr-managed/workload.log
+sudo chmod 0660 /var/log/all-os-openedr-managed/workload.log
+sudo all-os-openedr-apparmor-policy --name workload \
+    --allow-executable /usr/local/libexec/workload \
+    --write-file /var/log/all-os-openedr-managed/workload.log > all-os-openedr-workload
+sudo apparmor_parser -Q -K ./all-os-openedr-workload
+sudo install -o root -g root -m 0644 ./all-os-openedr-workload /etc/apparmor.d/
+sudo apparmor_parser -a -K /etc/apparmor.d/all-os-openedr-workload
+sudo grep -Fx 'all-os-openedr-workload (enforce)' /sys/kernel/security/apparmor/profiles
+```
+
+Use canonical paths in the unit and add the following as a drop-in through `systemctl edit`. Preserve your service's approved arguments. Set `PrivateNetwork=yes` for workloads that require no network. The `--immediate` option enters the profile before the first executable is evaluated. A missing profile stops the service from launching the workload.
+
+```ini
+[Service]
+User=workload-user
+Group=workload-user
+NoNewPrivileges=yes
+StandardOutput=append:/var/log/all-os-openedr-managed/workload.log
+StandardError=inherit
+ExecStart=
+ExecStart=/usr/bin/aa-exec --immediate --profile all-os-openedr-workload -- /usr/local/libexec/workload
+```
+
+Restart the service and verify a permitted launch, a denied launch, and graceful shutdown. The profile permits standard lifecycle signals from an unconfined service manager and permits normal signalling between processes in the same profile. Use a separate profile name for each workload. Stage updates outside `/etc/apparmor.d`, validate them with `apparmor_parser -Q -K`, and retain the last working profile outside that directory. To apply an update or roll it back, reload the chosen profile with `apparmor_parser -r -K PATH`, install the same file into its persistent location, and restart and retest the affected service. If loading or persistence fails, restore the last working profile in the kernel and on disk before restarting. The package leaves profile lifecycle under administrator control.
 
 The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 
