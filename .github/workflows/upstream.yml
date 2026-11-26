@@ -1,0 +1,31 @@
+name: Reconcile upstream
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: upstream-reconciliation
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: >-
+      github.repository == 'Cormier-Solutions-LLC/all-os-openedr' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' || (github.actor == 'cormierconsulting' &&
+       github.triggering_actor == 'cormierconsulting'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [main, develop]
+    env:
+      GIT_LFS_SKIP_SMUDGE: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Merge clean upstream changes
+        run: sh scripts/sync-upstream.sh "${{ matrix.branch }}"

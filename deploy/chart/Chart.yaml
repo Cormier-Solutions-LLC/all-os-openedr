@@ -1,0 +1,6 @@
+apiVersion: v2
+name: all-os-openedr-manager
+description: Read-only management API for OpenEDR telemetry indexed by Wazuh
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
