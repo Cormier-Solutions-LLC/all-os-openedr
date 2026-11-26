@@ -94,6 +94,24 @@ AssertPathIsMountPoint=/srv/smb
 
 Keep writable directories and files distinct from protected data at the storage layer. Check for alternate exports, bind mounts, and hard links that expose the same data through write-approved paths. Enforce server-side access controls for clients and processes outside the OpenEDR profile. Verify the workload's allowed outputs and blocked mutations against a disposable share before applying the policy to live data.
 
+### Enforce writer authorization on a Samba server
+
+On a standalone Samba server running Debian 13, configure separate Unix reader and writer groups and give authenticated Samba accounts only the membership they need. Samba checks writer-group membership on the server, so onboarding the SMB client to OpenEDR is optional for this control. The backing filesystem must also grant writes to approved identities. Keep the protected data out of any other export that grants broader writes.
+
+Install `samba`, `samba-vfs-modules`, and `rsyslog` on the server. Render a new dedicated share using an existing directory and groups.
+
+```sh
+all-os-openedr-samba-policy \
+    --share protected-archive --directory /srv/samba/protected-archive \
+    --readers-group archive-readers --writers-group archive-writers > protected-archive.conf
+```
+
+Review the section, install it as a root-owned fragment under `/etc/samba/`, and add `include = /etc/samba/protected-archive.conf` to the base Samba configuration. Use an unused share name and review the full effective configuration with `testparm -s` before loading it. This share requires SMB encryption and uses the `full_audit` VFS module. For updates or rollback, validate the replacement configuration and ensure clients reconnect to the share. Existing SMB connections can retain the permissions in effect when they connected. [Samba share configuration](https://www.samba.org/samba/docs/current/man-html/smb.conf.5.html)
+
+Install `/usr/share/all-os-openedr/samba/rsyslog.conf` as a root-owned file under `/etc/rsyslog.d/`, validate with `rsyslogd -N1`, and reload the service. Merge the packaged `samba-localfile.xml` into the Wazuh agent on the Samba server. On the Wazuh manager, install `openedr-samba_decoders.xml` in the local decoders directory and `110114-openedr-samba_rules.xml` in the local rules directory. These files are under `/usr/share/all-os-openedr/wazuh/`. Confirm rule IDs 110114 through 110117 are available, validate the configuration, and restart the affected Wazuh components.
+
+Rsyslog routes the share's original VFS audit payloads under the dedicated `openedr_smb_audit` tag. Wazuh alerts on failed file mutation calls and failed opens that requested mutation access. It retains the captured operation, share, account, client address, and audit line. The VFS log reports operation failures and their intent. It can differ from the SMB status returned to the client, so use client or server protocol evidence when an exact denial reason matters. Protect access to these logs and apply the retention policy for your environment. [Samba full-audit format](https://manpages.debian.org/trixie/samba/vfs_full_audit.8.en.html)
+
 The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 
 ## Enterprise Linux and Fedora RPM preview
