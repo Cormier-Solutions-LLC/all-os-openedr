@@ -4,11 +4,11 @@ This repository preserves the source and history of [ComodoSecurity/openedr](htt
 
 | Component | Current scope |
 | --- | --- |
-| Debian 13 | Versioned package for unprivileged process polling and an optional kernel Audit execution policy on amd64 |
+| Debian 13 | Versioned package for process polling, amd64 kernel Audit detection, and opt-in AppArmor execution controls for managed workloads |
 | Enterprise Linux and Fedora | RPM source builds with container qualification on Rocky Linux 9 and 10 and Fedora 44 |
 | Arch Linux | Versioned pacman package and opt-in systemd service for x86_64 |
 | Alpine Linux | APK source build and opt-in OpenRC service qualified in Alpine 3.23 and 3.24 containers |
-| Wazuh | Direct collection of preview JSON and Linux Audit events, with a protected-executable detection rule |
+| Wazuh | Direct collection of preview JSON and Linux Audit events with execution detection and prevention alerts |
 | OpenSearch | Wazuh alert forwarding example for an existing TLS-protected cluster |
 | Kubernetes | Helm chart and read-only management API for this telemetry |
 | macOS | Installer entry point stub |
