@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+- Add a locally signed Alpine APK source build with a supervised, opt-in OpenRC service that runs as an unprivileged account.
+
 ## 0.3.0
 
 - Add dedicated OpenSearch mappings, narrowly scoped forwarding and search roles, and an example retention policy.

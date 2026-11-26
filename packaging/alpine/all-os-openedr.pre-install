@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+if ! getent group all-os-openedr >/dev/null; then
+    addgroup -S all-os-openedr
+fi
+if ! id -u all-os-openedr >/dev/null 2>&1; then
+    adduser -S -D -H -G all-os-openedr -s /sbin/nologin all-os-openedr
+fi
