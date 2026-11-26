@@ -4,7 +4,7 @@ This software is subject to the terms of the Comodo Available Source License Agr
 
 ## Debian 13
 
-Use the versioned `all-os-openedr_<version>_all.deb` asset in the private repository's releases. From the source checkout, build it with `sh packaging/debian/build.sh "$(cat VERSION)" ./dist` on Debian.
+Use the versioned `all-os-openedr_<version>_all.deb` asset from the [GitHub releases](https://github.com/Cormier-Solutions-LLC/all-os-openedr/releases). From the source checkout, build it with `sh packaging/debian/build.sh "$(cat VERSION)" ./dist` on Debian.
 
 ```sh
 sudo apt install ./all-os-openedr_0.2.0_all.deb
@@ -88,6 +88,6 @@ Run `sh packaging/macos/install.sh` for the installer stub. The native plan cove
 
 The project moves work from Backlog to Open, In Process, Pending Merge, Merged, and Released. Move an issue to Released when the published version contains it and the target's delivery checks pass. Daily upstream reconciliation imports clean changes from the corresponding upstream branch. A conflict, rewritten upstream history, or changes to licensing or workflow files requires maintainer review.
 
-Maintainer updates and same-repository maintainer PRs use `cormier-runners` when the runner path is enabled. Contributor validation uses GitHub-hosted runners. A private repository with forking disabled accepts proposals through issues or separately reviewed patches unless the organization provides another contribution path. Keep the workflow path ruleset and the maintainer-only release branch ruleset enabled. Use Codex review on the exact PR revision before merging or publishing a stable release.
+GitHub's repository Actions policy restricts workflow execution to the maintainer and permits only `push`, `pull_request_target`, `schedule`, and `workflow_dispatch`. Keep that policy active before enabling Actions. Maintainer updates and same-repository maintainer PRs from protected `codex/` or `release/` branches use `cormier-runners`. The PR workflow uses the base branch definition and checks out the exact head SHA after its identity checks pass. Contributors can run `sh scripts/check-preview.sh` in a local Linux environment and submit changes from their own forks. Keep the maintainer-only branch and stable tag rulesets active. Use Codex review on the exact PR revision before merging or publishing a stable release.
 
 For stable publication, open the maintainer release PR against main. Verify the Codex summary reports a completed code review with no unresolved findings on the final PR head. Merge while the PR head and resulting release commit have the same tree. Update the maintainer branch `release/<version>` to that release commit, push the matching `v<version>` tag, and dispatch `Preview CI and release` on that branch with the stable channel.

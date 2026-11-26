@@ -2,8 +2,9 @@ name: Preview CI and release
 on:
   push:
     branches: [main, 'codex/**', 'release/**', 'release-*']
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
+    branches: [main]
   schedule:
     - cron: '47 7 * * *'
   workflow_dispatch:
@@ -16,34 +17,16 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: preview-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  group: preview-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 jobs:
-  contributor:
-    name: Contributor preview checks
-    if: >-
-      github.event_name == 'pull_request' &&
-      (github.actor != 'cormierconsulting' || github.triggering_actor != 'cormierconsulting' ||
-       github.event.pull_request.user.login != 'cormierconsulting' ||
-       github.event.pull_request.head.repo.full_name != github.repository ||
-       github.event.pull_request.base.ref != 'main' ||
-       !startsWith(github.event.pull_request.head.ref, 'codex/') &&
-       !startsWith(github.event.pull_request.head.ref, 'release/'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - run: sh scripts/check-preview.sh
-
   maintainer:
     name: Maintainer preview checks
     if: >-
       github.repository == 'Cormier-Solutions-LLC/all-os-openedr' &&
       github.actor == 'cormierconsulting' && github.triggering_actor == 'cormierconsulting' &&
       (github.event_name == 'push' ||
-       (github.event_name == 'pull_request' &&
+       (github.event_name == 'pull_request_target' &&
         github.event.pull_request.user.login == 'cormierconsulting' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.event.pull_request.base.ref == 'main' &&
@@ -59,6 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 0
       - id: version
