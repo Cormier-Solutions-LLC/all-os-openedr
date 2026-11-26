@@ -250,6 +250,18 @@ dedicated_indices = ["openedr-alerts-v1-*"]
 template = json.loads((integration / "openedr-index-template.json").read_text())
 assert template["index_patterns"] == dedicated_indices
 assert template["template"]["mappings"]["dynamic"] is False
+assert template["version"] >= 2
+fields = template["template"]["mappings"]["properties"]["data"]["properties"]
+for key, field_type in (
+    ("openedr_process_id", "keyword"),
+    ("openedr_parent_process_id", "keyword"),
+    ("openedr_stream_id", "keyword"),
+    ("openedr_kernel_monotonic_ns", "long"),
+    ("openedr_wait_status", "long"),
+    ("openedr_thread_group_leader", "boolean"),
+    ("openedr_missing_events", "long"),
+):
+    assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
     policy = json.loads((integration / f"openedr-{role}-role.json").read_text())
     assert [permission["index_patterns"] for permission in policy["index_permissions"]] == [dedicated_indices]

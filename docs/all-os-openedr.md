@@ -32,6 +32,8 @@ Each service start emits a new stream ID. Running processes whose births predate
 
 Merge the packaged `lifecycle-localfile.xml` into the Wazuh agent and install the packaged `110100-openedr_rules.xml` in the manager's local rules directory. Confirm rule IDs 110100 through 110103 are available. Rule 110102 covers lifecycle events and rule 110103 reports loss of continuity. The lifecycle stream can grow quickly on busy hosts. Configure rotation and retention for this separate path and verify that the Wazuh agent follows the new file after rotation.
 
+The dedicated OpenSearch template indexes process and parent identities, stream IDs, exit wait status, and gap information. Install the updated template before creating new lifecycle indices. For an existing index, apply the additive fields to its mapping. Reindex lifecycle documents already stored before that mapping update if they need to participate in those queries. [OpenSearch explicit mappings](https://docs.opensearch.org/latest/mappings/)
+
 ### Kernel execution detection with Wazuh
 
 On Debian 13 amd64, Linux Audit can detect a successful launch of a protected executable by a login identity other than the one you approve. Choose a real executable stored under an administrator-controlled path and use the numeric UID of the approved login account. Audit records the original login UID across privilege changes. The policy excludes processes whose login UID is unset, including many system services.

@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 1,
+  "version": 2,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -33,6 +33,20 @@
             "openedr_host": {"type": "keyword", "ignore_above": 256},
             "openedr_observed_at": {"type": "date"},
             "openedr_pid": {"type": "long"},
+            "openedr_tid": {"type": "long"},
+            "openedr_parent_pid": {"type": "long"},
+            "openedr_parent_tid": {"type": "long"},
+            "openedr_process_id": {"type": "keyword"},
+            "openedr_parent_process_id": {"type": "keyword"},
+            "openedr_boot_id": {"type": "keyword"},
+            "openedr_stream_id": {"type": "keyword"},
+            "openedr_thread_group_leader": {"type": "boolean"},
+            "openedr_wait_status": {"type": "long"},
+            "openedr_kernel_cpu": {"type": "integer"},
+            "openedr_kernel_sequence": {"type": "long"},
+            "openedr_kernel_monotonic_ns": {"type": "long"},
+            "openedr_gap_reason": {"type": "keyword"},
+            "openedr_missing_events": {"type": "long"},
             "openedr_process": {"type": "keyword", "ignore_above": 256}
           }
         }
