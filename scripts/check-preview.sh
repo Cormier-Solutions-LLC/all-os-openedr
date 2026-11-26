@@ -16,6 +16,7 @@ import os
 import re
 import struct
 import sys
+import uuid
 from argparse import ArgumentTypeError
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -27,6 +28,7 @@ from all_os_openedr.apparmor_policy import policy_path, profile_name, render_pro
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
+from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.response import apply, decode_token
@@ -56,6 +58,37 @@ with TemporaryDirectory() as temporary:
     catalog.chmod(0o666)
     assert read_catalog(catalog) == (None, {})
     assert read_catalog(None) == (None, {})
+
+    execution_uuid = uuid.UUID("a431703b-1fb1-43c3-9344-4cfac8e9ef6c")
+    assert list(policy_rules(execution_uuid)) == [
+        f"appraise func=BPRM_CHECK fsuuid={execution_uuid}",
+        f"appraise func=MMAP_CHECK mask=MAY_EXEC fsuuid={execution_uuid}",
+    ]
+    try:
+        select_filesystem("/")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("IMA accepted the root filesystem")
+    candidate.write_bytes(content)
+    with candidate.open("rb") as opened:
+        fd = opened.fileno()
+        with patch("all_os_openedr.ima_policy.os.setxattr") as set_label:
+            assert ima_approve(fd, os.fstat(fd), {digest: "trusted"}) == digest
+            set_label.assert_called_once_with(fd, IMA_ATTRIBUTE, IMA_SHA256_PREFIX + bytes.fromhex(digest), os.XATTR_CREATE)
+        opened.seek(0)
+        with patch("all_os_openedr.ima_policy.os.setxattr") as set_label:
+            try:
+                ima_approve(fd, os.fstat(fd), {digest: "untrusted"})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("IMA approved an untrusted hash")
+            set_label.assert_not_called()
+        with patch("all_os_openedr.ima_policy.os.getxattr", side_effect=OSError(errno.ENODATA, "absent")), \
+             patch("all_os_openedr.ima_policy.os.removexattr") as remove_label:
+            ima_revoke(fd)
+            remove_label.assert_not_called()
 
     calls = []
     def fanotify_init(init_flags, event_flags):
@@ -360,6 +393,14 @@ for mask in ("w", "a", "l", "c", "d", "wc"):
     assert file_rule.search(f'{record} denied_mask="{mask}"')
 assert not file_rule.search(f'{record} denied_mask="r" type=SYSCALL denied_mask="w"')
 assert not file_rule.search(record.replace('class="file"', 'class="net"') + ' denied_mask="w"')
+ima_rule = audit_rules.find("rule[@id='110119']")
+ima_match = re.compile(ima_rule.findtext("match"))
+ima_failure = ('type=INTEGRITY_DATA msg=audit(1795728256.146:111): pid=852 uid=0 auid=1000 ses=3 '
+               'subj=unconfined op=appraise_data cause=missing-hash comm="python3" name="/srv/exec/sample" '
+               'dev="vdc" ino=15 res=0 errno=0')
+assert ima_match.search(ima_failure)
+assert not ima_match.search(ima_failure.replace("res=0", "res=1"))
+assert not ima_match.search(ima_failure.replace("op=appraise_data", "op=collect_data"))
 samba_feed = ElementTree.parse(integration / "samba-localfile.xml")
 assert samba_feed.findtext("location") == "/var/log/samba/openedr-share-audit.log"
 assert samba_feed.findtext("log_format") == "syslog"
@@ -423,6 +464,7 @@ cmp packaging/debian/all-os-openedr-file-provenance.service \
 cmp packaging/debian/all-os-openedr-executable.service \
     "$work/package/usr/lib/systemd/system/all-os-openedr-executable.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
+test -x "$work/package/usr/bin/all-os-openedr-ima"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"

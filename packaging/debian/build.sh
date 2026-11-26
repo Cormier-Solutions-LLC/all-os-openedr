@@ -33,6 +33,7 @@ Description: OpenEDR endpoint detection and protection preview for Linux
 EOF
 install -m 0644 "$root"/all_os_openedr/*.py "$stage/usr/lib/all-os-openedr/all_os_openedr/"
 install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
+    "$root/packaging/debian/all-os-openedr-ima" \
     "$root/packaging/debian/all-os-openedr-apparmor-policy" \
     "$root/packaging/debian/all-os-openedr-response" \
     "$root/packaging/debian/all-os-openedr-samba-policy" "$stage/usr/bin/"
