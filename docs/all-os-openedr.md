@@ -36,8 +36,14 @@ Download the versioned `all-os-openedr-<version>-1-any.pkg.tar.zst` and correspo
 
 ```sh
 version=0.5.0
-sha256sum --check --ignore-missing "SHA256SUMS-$version.txt"
-sudo pacman -U "./all-os-openedr-$version-1-any.pkg.tar.zst"
+package="all-os-openedr-$version-1-any.pkg.tar.zst"
+awk -v name="./$package" '$2 == name' "SHA256SUMS-$version.txt" | sha256sum --check &&
+    sudo pacman -U "./$package"
+```
+
+Enable the service once the package installs.
+
+```sh
 sudo systemctl enable --now all-os-openedr.service
 ```
 
