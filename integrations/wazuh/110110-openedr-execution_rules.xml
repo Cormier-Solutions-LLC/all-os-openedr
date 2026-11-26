@@ -29,4 +29,12 @@
     <description>OpenEDR AppArmor workload blocked a file mutation</description>
     <group>openedr_file_protection,</group>
   </rule>
+  <rule id="110118" level="5">
+    <if_sid>80700</if_sid>
+    <field name="audit.type" type="pcre2">^SYSCALL$</field>
+    <field name="audit.success" type="pcre2">^yes$</field>
+    <field name="audit.key" type="pcre2">^openedr-config-change$</field>
+    <description>OpenEDR observed write access or an attribute change on monitored configuration</description>
+    <group>openedr_configuration_change,</group>
+  </rule>
 </group>

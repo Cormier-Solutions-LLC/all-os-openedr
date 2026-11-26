@@ -20,7 +20,7 @@ from unittest.mock import patch
 from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
-from all_os_openedr.audit_rules import executable, login_uid, render_rules
+from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -57,6 +57,23 @@ with TemporaryDirectory() as temporary:
         pass
     else:
         raise AssertionError("Accepted an executable path with a space")
+
+    configuration = Path(temporary) / "configuration"
+    configuration.mkdir()
+    startup_file = Path(temporary) / "startup"
+    startup_file.touch()
+    target_dir, target_file = map(config_target, (str(configuration), str(startup_file)))
+    assert list(render_config_rules([target_dir, target_file, target_dir])) == [
+        f"-a always,exit -F arch={abi} -F {field}={target} -F perm=wa -F success=1 -k openedr-config-change"
+        for field, target in (("dir", configuration), ("path", startup_file)) for abi in ("b64", "b32")
+    ]
+    for argument in ("/", "startup", str(invalid), str(startup_file.with_suffix(".missing")), "/dev/null"):
+        try:
+            config_target(argument)
+        except ArgumentTypeError:
+            pass
+        else:
+            raise AssertionError(f"Accepted an invalid configuration target {argument!r}")
 
     approved = policy_path("/usr/bin/true")
     data = policy_path(sys.argv[1])
@@ -279,12 +296,16 @@ audit_rules = ElementTree.parse(integration / "110110-openedr-execution_rules.xm
 for rule_id, key in (
     (110110, "openedr-restricted-exec"),
     (110111, "openedr-session-exec"),
+    (110118, "openedr-config-change"),
 ):
     rule = audit_rules.find(f"rule[@id='{rule_id}']")
     assert rule.findtext("if_sid") == "80700"
     assert rule.findtext("field[@name='audit.type']") == "^SYSCALL$"
     assert rule.findtext("field[@name='audit.success']") == "^yes$"
     assert rule.findtext("field[@name='audit.key']") == f"^{key}$"
+    if rule_id == 110118:
+        assert rule.find("options") is None
+        assert rule.findtext("group") == "openedr_configuration_change,"
 prevention = audit_rules.find("rule[@id='110112']")
 assert prevention.findtext("if_sid") == "80700"
 assert prevention.findtext("group") == "openedr_execution_prevention,"
