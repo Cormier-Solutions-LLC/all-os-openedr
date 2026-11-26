@@ -1,0 +1,29 @@
+<group name="openedr,samba,">
+  <rule id="110114" level="0">
+    <decoded_as>openedr-samba-audit</decoded_as>
+    <field name="openedr_samba.result" type="pcre2">^fail \(</field>
+    <description>OpenEDR Samba operation failed</description>
+  </rule>
+  <rule id="110115" level="8">
+    <if_sid>110114</if_sid>
+    <field name="openedr_samba.operation" type="pcre2">^(mkdirat|renameat|unlinkat|linkat|ftruncate|pwrite|pwrite_send|pwrite_recv)$</field>
+    <description>OpenEDR Samba file mutation failed</description>
+    <group>openedr_share_protection,</group>
+  </rule>
+  <rule id="110116" level="8">
+    <if_sid>110114</if_sid>
+    <field name="openedr_samba.operation" type="pcre2">^create_file$</field>
+    <field name="openedr_samba.disposition" type="pcre2">^(supersede|create|open_if|overwrite|overwrite_if)$</field>
+    <description>OpenEDR Samba request to create or overwrite a file failed</description>
+    <group>openedr_share_protection,</group>
+  </rule>
+  <rule id="110117" level="8">
+    <if_sid>110114</if_sid>
+    <field name="openedr_samba.operation" type="pcre2">^create_file$</field>
+    <field name="openedr_samba.disposition" type="pcre2">^open$</field>
+    <!-- The alternatives select data/append, EA/delete-child, attributes, delete/DAC/owner, and generic write/all. -->
+    <field name="openedr_samba.access" type="pcre2">(?i)^0x[0-9a-f]*(?:[2-7a-f]|[134-79b-f][0-9a-f]|[13579bdf][0-9a-f]{2}|[134-9a-f][0-9a-f]{4}|[134-79b-f][0-9a-f]{7})$</field>
+    <description>OpenEDR Samba open requesting mutation access failed</description>
+    <group>openedr_share_protection,</group>
+  </rule>
+</group>

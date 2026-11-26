@@ -13,12 +13,14 @@ import sys
 from argparse import ArgumentTypeError
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import executable, login_uid, render_rules
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
+from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
 with TemporaryDirectory() as temporary:
     protected = Path(temporary) / "approved-tool"
@@ -103,6 +105,29 @@ with TemporaryDirectory() as temporary:
         else:
             raise AssertionError("Accepted overlapping protected or approved code paths")
 
+    readers = SimpleNamespace(gr_gid=1001, gr_name="archive-readers")
+    writers = SimpleNamespace(gr_gid=1002, gr_name="archive-writers")
+    export = export_directory(str(archive))
+    share = render_share(share_name("archive"), export, readers, writers)
+    assert "read only = yes" in share
+    assert "valid users = @archive-readers @archive-writers" in share
+    assert "write list = @archive-writers" in share
+    assert "server smb encrypt = required" in share
+    assert "full_audit:success = none" in share
+    for value in ("global", "homes", "archive\n[global]"):
+        try:
+            share_name(value)
+        except ArgumentTypeError:
+            pass
+        else:
+            raise AssertionError("Accepted a reserved or nonliteral share name")
+    try:
+        render_share("archive", export, readers, readers)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Accepted the same group for readers and writers")
+
 class InstalledPlugin:
     def load(self):
         return Plugin("sink", API_VERSION, lambda text: text.upper())
@@ -151,6 +176,16 @@ for mask in ("w", "a", "l", "c", "d", "wc"):
     assert file_rule.search(f'{record} denied_mask="{mask}"')
 assert not file_rule.search(f'{record} denied_mask="r" type=SYSCALL denied_mask="w"')
 assert not file_rule.search(record.replace('class="file"', 'class="net"') + ' denied_mask="w"')
+samba_feed = ElementTree.parse(integration / "samba-localfile.xml")
+assert samba_feed.findtext("location") == "/var/log/samba/openedr-share-audit.log"
+assert samba_feed.findtext("log_format") == "syslog"
+samba_rules = ElementTree.parse(integration / "110114-openedr-samba_rules.xml")
+mutation_mask = re.compile(samba_rules.findtext("rule[@id='110117']/field[@name='openedr_samba.access']"))
+write_access = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000
+for bit in range(32):
+    assert bool(mutation_mask.fullmatch(f"{1 << bit:#x}")) == bool(write_access & (1 << bit))
+assert not mutation_mask.fullmatch("0x120089")
+assert mutation_mask.fullmatch("0x12019f")
 dedicated_indices = ["openedr-alerts-v1-*"]
 template = json.loads((integration / "openedr-index-template.json").read_text())
 assert template["index_patterns"] == dedicated_indices
@@ -176,9 +211,12 @@ cmp LICENSE.md "$work/package/usr/share/doc/all-os-openedr/copyright"
 test -f "$work/package/usr/lib/systemd/system/all-os-openedr.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
-for filename in audit-localfile.xml 110110-openedr-execution_rules.xml; do
+test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
+for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml \
+    openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done
+cmp integrations/samba/rsyslog.conf "$work/package/usr/share/all-os-openedr/samba/rsyslog.conf"
 (cd "$work/package/usr/lib/all-os-openedr" && python3 -B -m all_os_openedr --once --output "$work/packaged.jsonl")
 test -s "$work/packaged.jsonl"
 set -- --set image=example.invalid/manager:verification --set opensearchUrl=https://opensearch.example.invalid:9200 \

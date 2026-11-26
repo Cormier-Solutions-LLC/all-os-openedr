@@ -1,0 +1,6 @@
+<decoder name="openedr-samba-audit">
+  <program_name type="pcre2">^openedr_smb_audit$</program_name>
+  <prematch type="pcre2">^openedr-smb-v1\|</prematch>
+  <regex type="pcre2" offset="after_prematch">^([a-z0-9_-]{1,64})\|([^|\s]+)\|([^|\r\n]+)\|([a-z_]+)\|(ok|fail \([^|\r\n]*\))\|(?:(0x[0-9a-fA-F]{1,8})\|(file|dir)\|([a-z_]+)\|(.+))?</regex>
+  <order>openedr_samba.share,srcip,openedr_samba.user,openedr_samba.operation,openedr_samba.result,openedr_samba.access,openedr_samba.object_type,openedr_samba.disposition,openedr_samba.path</order>
+</decoder>

@@ -1,0 +1,4 @@
+<localfile>
+  <location>/var/log/samba/openedr-share-audit.log</location>
+  <log_format>syslog</log_format>
+</localfile>

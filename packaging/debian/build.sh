@@ -17,7 +17,7 @@ stage=$(mktemp -d)
 trap 'rm -rf -- "$stage"' EXIT
 install -d "$stage/DEBIAN" "$stage/usr/lib/all-os-openedr/all_os_openedr" \
     "$stage/usr/lib/systemd/system" "$stage/usr/share/doc/all-os-openedr" \
-    "$stage/usr/bin" "$stage/usr/share/all-os-openedr/wazuh"
+    "$stage/usr/bin" "$stage/usr/share/all-os-openedr/wazuh" "$stage/usr/share/all-os-openedr/samba"
 cat > "$stage/DEBIAN/control" <<EOF
 Package: all-os-openedr
 Version: $package_version
@@ -26,16 +26,21 @@ Priority: optional
 Architecture: all
 Maintainer: All OS OpenEDR maintainers <all-os-openedr@users.noreply.github.com>
 Depends: python3 (>= 3.10), init-system-helpers
-Suggests: apparmor, auditd, wazuh-agent
+Suggests: apparmor, auditd, rsyslog, samba, samba-vfs-modules, wazuh-agent
 Description: OpenEDR endpoint detection and protection preview for Linux
  The unprivileged collector writes local JSON process observations for Wazuh.
- Opt-in policy generators support Linux Audit and AppArmor.
+ Opt-in policy generators support Linux Audit, AppArmor and Samba.
 EOF
 install -m 0644 "$root"/all_os_openedr/*.py "$stage/usr/lib/all-os-openedr/all_os_openedr/"
 install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
-    "$root/packaging/debian/all-os-openedr-apparmor-policy" "$stage/usr/bin/"
+    "$root/packaging/debian/all-os-openedr-apparmor-policy" \
+    "$root/packaging/debian/all-os-openedr-samba-policy" "$stage/usr/bin/"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
+    "$root/integrations/wazuh/samba-localfile.xml" \
+    "$root/integrations/wazuh/openedr-samba_decoders.xml" \
+    "$root/integrations/wazuh/110114-openedr-samba_rules.xml" \
     "$root/integrations/wazuh/110110-openedr-execution_rules.xml" "$stage/usr/share/all-os-openedr/wazuh/"
+install -m 0644 "$root/integrations/samba/rsyslog.conf" "$stage/usr/share/all-os-openedr/samba/"
 install -m 0644 "$root/packaging/debian/all-os-openedr.service" "$stage/usr/lib/systemd/system/"
 install -m 0755 "$root/packaging/debian/prerm" "$stage/DEBIAN/prerm"
 install -m 0755 "$root/packaging/debian/postinst" "$stage/DEBIAN/postinst"
