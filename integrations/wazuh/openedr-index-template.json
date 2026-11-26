@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 7,
+  "version": 8,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -84,6 +84,7 @@
             "openedr_executable_format": {"type": "keyword"},
             "openedr_executable_catalog_sha256": {"type": "keyword"},
             "openedr_executable_verdict": {"type": "keyword"},
+            "openedr_executable_volume_uuid": {"type": "keyword"},
             "openedr_uid": {"type": "long"},
             "openedr_containment_decision": {"type": "keyword"},
             "openedr_containment_reason": {"type": "keyword"},

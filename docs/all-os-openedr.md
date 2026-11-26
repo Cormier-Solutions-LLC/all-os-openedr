@@ -149,7 +149,7 @@ sudo install -o root -g root -m 0640 /usr/share/all-os-openedr/wazuh/ima-dispatc
 sudo auditctl --signal reload
 ```
 
-Merge the packaged `ima-localfile.xml` into the enrolled Wazuh agent. Update `110100-openedr_rules.xml` on the manager and verify rule ID `110119` is available. New dedicated OpenSearch indices use template version 6 for IMA UID, login UID, Audit serial, and failure cause. Configure rotation for the JSON log with root-only file permissions. To stop forwarding, remove the installed Audit plugin configuration and reload Audit before removing the package.
+Merge the packaged `ima-localfile.xml` into the enrolled Wazuh agent. Update `110100-openedr_rules.xml` on the manager and verify rule ID `110119` is available. Install the current OpenSearch template to map IMA UID, login UID, Audit serial, and failure cause in new dedicated indices. Configure rotation for the JSON log with root-only file permissions. To stop forwarding, remove the installed Audit plugin configuration and reload Audit before removing the package.
 
 ### Pre-execution control for a managed workload
 
@@ -212,6 +212,23 @@ StandardError=append:/var/log/all-os-openedr-containment/launches.jsonl
 The launcher hashes and copies the opened file before handing its sealed bytes to Bubblewrap. The isolated process starts with private file, network, IPC, and PID namespaces and a bounded scratch directory. A syscall filter denies socket creation and cross-process memory operations. The read-only view includes the captured program and three Debian amd64 glibc runtime files for static and basic glibc-linked ELF programs. The launcher discards isolated process I/O and returns its exit status. The scope is headless ELF programs invoked through the configured entry point. Shell scripts, desktop sessions, direct execution outside the launcher, and applications requiring other libraries or host data need additional controls and qualification. [Bubblewrap execution options](https://manpages.debian.org/trixie/bubblewrap/bwrap.1.en.html)
 
 Review the local JSON decisions, including SHA-256, catalog ID, disposition, exit code for isolated launches, and the sandbox supervisor PID when available. On enrolled endpoints, merge `containment-localfile.xml` from `/usr/share/all-os-openedr/wazuh/` into the agent configuration. Install the updated `110100-openedr_rules.xml` on the manager. Reserve rule IDs 110120 through 110122. Configure log retention for the service's append file and restart the managed service after rotating it. Refresh the dedicated OpenSearch template to use typed containment fields for new indices.
+
+#### Use the launcher with a kernel-protected execution volume
+
+Apply the [IMA volume policy](#kernel-execution-approval-on-a-managed-volume) before deploying this service. Read the chosen ext4 volume's UUID with `findmnt -nr -o UUID --mountpoint /srv/openedr-exec`. Put that value in the launcher command and require the mount in the unit. The example replaces the service's previous launch command.
+
+```ini
+[Unit]
+RequiresMountsFor=/srv/openedr-exec
+
+[Service]
+ExecStart=
+ExecStart=/usr/bin/all-os-openedr-launch --catalog /etc/all-os-openedr-executable-verdicts.json --execution-volume /srv/openedr-exec REPLACE_WITH_VOLUME_UUID /srv/openedr-exec/program
+```
+
+The launcher checks the mount, UUID, and opened file's device before it runs the program. A trusted file must also have the matching approval from `all-os-openedr-ima approve`. Native execution uses the original file descriptor, so the kernel still appraises that file. Unknown files run from a sealed copy in the isolated environment. The UUID is included in the launch decision. To withdraw native trust, stop the service, revoke the IMA approval, then update the catalog and restart the service. The catalog and the kernel approval are separate inputs.
+
+After each deployment or boot-policy change, verify on the endpoint that a benign unsigned file on the volume is denied when launched directly and runs in isolation through the managed service. Verify that the enrolled service blocks execution when the volume is unavailable or replaced. This option validates the volume and its local approval attribute. The boot-time IMA policy supplies the direct-execution enforcement.
 
 ### Protect local directories and mounted SMB shares
 
