@@ -42,21 +42,31 @@ On a Debian 13 endpoint with AppArmor enabled, start a systemd service through `
 
 Install `apparmor` and review the profile before loading it. The example uses a statically linked executable. Pass `--allow-library PATH` for each trusted library needed by a dynamically linked workload and `--read-file PATH` for needed input files. Pass `--write-file PATH` for individual existing output files. Use administrator-controlled directories for all approved code and avoid allowing generic interpreters or tools that can execute user-provided code. Use a separate profile and isolated VM for analysis of unknown candidates.
 
+The profile restricts writes to the default journald socket. This example sends workload output to a dedicated file. Replace `workload-user` with the service account and its group in the examples. Linux Audit continues to record kernel denials separately.
+
 ```sh
-all-os-openedr-apparmor-policy --name workload \
-    --allow-executable /usr/local/libexec/workload > all-os-openedr-workload
+sudo install -d -o root -g workload-user -m 0750 /var/log/all-os-openedr-managed
+sudo touch /var/log/all-os-openedr-managed/workload.log
+sudo chown root:workload-user /var/log/all-os-openedr-managed/workload.log
+sudo chmod 0660 /var/log/all-os-openedr-managed/workload.log
+sudo all-os-openedr-apparmor-policy --name workload \
+    --allow-executable /usr/local/libexec/workload \
+    --write-file /var/log/all-os-openedr-managed/workload.log > all-os-openedr-workload
 sudo apparmor_parser -Q -K ./all-os-openedr-workload
 sudo install -o root -g root -m 0644 ./all-os-openedr-workload /etc/apparmor.d/
 sudo apparmor_parser -a -K /etc/apparmor.d/all-os-openedr-workload
 sudo grep -Fx 'all-os-openedr-workload (enforce)' /sys/kernel/security/apparmor/profiles
 ```
 
-Use canonical paths in the unit, replace `workload-user` with the service account, and add the following as a drop-in through `systemctl edit`. Preserve your service's approved arguments. Set `PrivateNetwork=yes` for workloads that require no network. The `--immediate` option enters the profile before the first executable is evaluated. A missing profile stops the service from launching the workload.
+Use canonical paths in the unit and add the following as a drop-in through `systemctl edit`. Preserve your service's approved arguments. Set `PrivateNetwork=yes` for workloads that require no network. The `--immediate` option enters the profile before the first executable is evaluated. A missing profile stops the service from launching the workload.
 
 ```ini
 [Service]
 User=workload-user
+Group=workload-user
 NoNewPrivileges=yes
+StandardOutput=append:/var/log/all-os-openedr-managed/workload.log
+StandardError=inherit
 ExecStart=
 ExecStart=/usr/bin/aa-exec --immediate --profile all-os-openedr-workload -- /usr/local/libexec/workload
 ```
