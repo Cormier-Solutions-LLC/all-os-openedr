@@ -194,6 +194,8 @@ def visible_text(raw):
 
 
 class FanotifyFilesystem:
+    optional_init_flags = 0
+
     def __init__(self, filesystem, output):
         self.filesystem = Path(filesystem).resolve(strict=True)
         if not self.filesystem.is_dir() or not self.filesystem.is_mount():
@@ -239,6 +241,13 @@ class FanotifyFilesystem:
         except FileNotFoundError:
             return target.parent.stat().st_dev == self.device
 
+    def open_channel(self):
+        event_flags = os.O_RDONLY | os.O_CLOEXEC
+        fd = self.libc.fanotify_init(self.init_flags | self.optional_init_flags, event_flags)
+        if fd < 0 and self.optional_init_flags and ctypes.get_errno() == errno.EINVAL:
+            fd = self.libc.fanotify_init(self.init_flags, event_flags)
+        return checked(fd, "fanotify_init")
+
     def stream(self):
         # Linux 6.12 open_by_handle_at uses fdget(), which rejects an O_PATH mount descriptor.
         self.mount_fd = os.open(self.filesystem, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
@@ -249,7 +258,7 @@ class FanotifyFilesystem:
             mount_id = fd_field(self.mount_fd, "mnt_id")
             if not mount_id:
                 raise ValueError("the selected filesystem has no visible mount ID")
-            fd = checked(self.libc.fanotify_init(self.init_flags, os.O_RDONLY | os.O_CLOEXEC), "fanotify_init")
+            fd = self.open_channel()
             try:
                 checked(self.libc.fanotify_mark(fd, FAN_MARK, self.event_mask, self.mount_fd, b"."), "fanotify_mark")
                 drop_setup_capabilities(self.libc, self.retain_read_search)

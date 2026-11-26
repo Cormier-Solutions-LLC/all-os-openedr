@@ -98,8 +98,8 @@ def inspect_descriptor(fd):
 
 
 class ExecutableOpen(FanotifyFilesystem):
-    # CLOEXEC, NONBLOCK, REPORT_PIDFD, REPORT_FD_ERROR, with file descriptors in FAN_CLASS_NOTIF.
-    init_flags = 0x00002083
+    init_flags = 0x00000083  # CLOEXEC, NONBLOCK, REPORT_PIDFD and FAN_CLASS_NOTIF.
+    optional_init_flags = 0x00002000  # REPORT_FD_ERROR is unavailable on some Linux 6.12 kernels.
     event_mask = OPEN_EXEC
     retain_read_search = False
     separate_output = False

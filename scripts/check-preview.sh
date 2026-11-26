@@ -8,6 +8,8 @@ trap 'rm -rf -- "$work"' EXIT
 python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
 import base64
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -23,7 +25,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
-from all_os_openedr.executable import MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
+from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -54,6 +56,18 @@ with TemporaryDirectory() as temporary:
     catalog.chmod(0o666)
     assert read_catalog(catalog) == (None, {})
     assert read_catalog(None) == (None, {})
+
+    calls = []
+    def fanotify_init(init_flags, event_flags):
+        calls.append(init_flags)
+        if len(calls) == 1:
+            ctypes.set_errno(errno.EINVAL)
+            return -1
+        return 42
+    collector = ExecutableOpen.__new__(ExecutableOpen)
+    collector.libc = SimpleNamespace(fanotify_init=fanotify_init)
+    assert collector.open_channel() == 42
+    assert calls == [collector.init_flags | collector.optional_init_flags, collector.init_flags]
 
     protected = Path(temporary) / "approved-tool"
     protected.touch(mode=0o700)
