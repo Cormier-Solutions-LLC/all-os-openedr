@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Add opt-in Debian file provenance with kernel file handles, rename pairs, process attribution, and Wazuh queue overflow alerts.
 - Add opt-in Debian network isolation through Wazuh with signed endpoint-scoped approvals, audit records, and kernel-timed recovery.
 - Add an optional Linux process connector service that captures fork, exec, and task exit events, links observed parents, and reports detected stream gaps to Wazuh.
 - Add a Samba server policy for group-authorized writes from SMB clients, plus Wazuh rules for failed mutation requests.

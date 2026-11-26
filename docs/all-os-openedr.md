@@ -34,6 +34,25 @@ Merge the packaged `lifecycle-localfile.xml` into the Wazuh agent and install th
 
 The dedicated OpenSearch template indexes process and parent identities, stream IDs, exit wait status, and gap information. Install the updated template before creating new lifecycle indices. For an existing index, apply the additive fields to its mapping. Reindex lifecycle documents already stored before that mapping update if they need to participate in those queries. [OpenSearch explicit mappings](https://docs.opensearch.org/latest/mappings/)
 
+### Trace file activity on a mounted filesystem
+
+The optional Debian file provenance service monitors an explicitly chosen filesystem recursively. It reports opens, accesses, modifications, metadata changes, closes, creations, deletions, execution opens, and renames. File IDs are derived from the boot, filesystem, and Linux file handle. Renames carry the kernel-reported source and destination names when both directory entries are available. Display paths use directory handles resolved at collection time. Use the file ID to follow a file through path changes.
+
+Choose a mounted filesystem dedicated to the data you want to observe. The service monitors the underlying filesystem instance, including activity through other mounts of that instance. Keep the collector log and forwarding queues on a separate filesystem so the forwarding pipeline cannot generate more events from its own writes. Begin with a dedicated ext4 volume and confirm the expected event volume and permissions before enabling forwarding.
+
+```sh
+printf 'OPENEDR_FILE_FILESYSTEM=/srv/openedr-provenance\n' |
+  sudo tee /etc/default/all-os-openedr-file-provenance
+sudo systemctl enable --now all-os-openedr-file-provenance.service
+sudo tail /var/log/all-os-openedr-file-provenance/events.jsonl
+```
+
+The service uses `CAP_SYS_ADMIN` to open and mark the fanotify queue, then drops it before reading events. It keeps `CAP_DAC_READ_SEARCH` for path resolution and runs under a dynamic service account. File event details distinguish a kernel PID from a pidfd-verified process snapshot. A snapshot can supply observed real and effective UIDs and an actor ID that matches the polling collector's process event ID. Short-lived actors or unavailable credentials can leave only the kernel PID. These UIDs reflect the observation time.
+
+Add the [file provenance localfile stanza](../integrations/wazuh/file-provenance-localfile.xml) to the enrolled agent and install the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. File activity uses rule `110105`. Rule `110106` reports a stream gap such as queue overflow. The kernel does not provide an exact dropped-record count for this queue. Install template version 4 for new dedicated OpenSearch indices to query file IDs, both rename paths, and actor IDs. Restrict access to the logs and indices because they can contain filenames and account identifiers.
+
+Fanotify can coalesce operations. Rows with the same notification ID share one kernel report and observation time. Use that ID when counting notifications or interpreting operation order. Full-file read and write hashing, mapped I/O coverage, and remote changes on network shares need additional sensors. [Linux fanotify event semantics](https://man7.org/linux/man-pages/man7/fanotify.7.html)
+
 ### Kernel execution detection with Wazuh
 
 On Debian 13 amd64, Linux Audit can detect a successful launch of a protected executable by a login identity other than the one you approve. Choose a real executable stored under an administrator-controlled path and use the numeric UID of the approved login account. Audit records the original login UID across privilege changes. The policy excludes processes whose login UID is unset, including many system services.

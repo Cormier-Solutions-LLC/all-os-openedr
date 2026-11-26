@@ -1,0 +1,30 @@
+[Unit]
+Description=All OS OpenEDR file provenance
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/lib/all-os-openedr
+EnvironmentFile=-/etc/default/all-os-openedr-file-provenance
+ExecStart=/usr/bin/python3 -B -m all_os_openedr --collector linux-file-provenance --filesystem ${OPENEDR_FILE_FILESYSTEM} --output /var/log/all-os-openedr-file-provenance/events.jsonl
+DynamicUser=yes
+LogsDirectory=all-os-openedr-file-provenance
+LogsDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

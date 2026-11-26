@@ -21,6 +21,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import executable, login_uid, render_rules
+from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.response import apply, decode_token
@@ -213,6 +214,45 @@ lifecycle_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
 assert lifecycle_rules.find("rule[@id='110102']") is not None
 assert lifecycle_rules.find("rule[@id='110103']") is not None
 assert lifecycle_rules.find("rule[@id='110104']") is not None
+assert lifecycle_rules.find("rule[@id='110105']") is not None
+assert lifecycle_rules.find("rule[@id='110106']") is not None
+provenance_feed = ElementTree.parse(integration / "file-provenance-localfile.xml")
+assert provenance_feed.findtext("location") == "/var/log/all-os-openedr-file-provenance/events.jsonl"
+assert provenance_feed.findtext("log_format") == "json"
+
+def file_record(kind, handle, name=None):
+    payload = b"testFSID" + struct.pack("=Ii", len(handle), 1) + handle
+    if name is not None:
+        payload += name + b"\0"
+    return INFO_HEADER.pack(kind, 0, INFO_HEADER.size + len(payload)) + payload
+
+def file_event(mask, *records):
+    packed = b"".join(records)
+    return METADATA.pack(METADATA.size + len(packed), 3, 0, METADATA.size, mask, -1, 0) + packed
+
+rename = file_event(RENAME, file_record(NEW_DFID_NAME, b"parentB", b"after"),
+                    file_record(OLD_DFID_NAME, b"parentA", b"before"), file_record(FID, b"object"))
+opening = file_event(0x20, file_record(DFID_NAME, b"parentA", b"before"), file_record(FID, b"object"))
+decoded = list(decode_events(opening + rename + file_event(OVERFLOW)))
+assert [item[0] for item in decoded] == [0x20, RENAME, OVERFLOW]
+before, after = decoded[0][2], decoded[1][2]
+assert before[FID].identity("boot", 1) == after[FID].identity("boot", 1)
+assert before[FID].identity("boot", 1) != after[FID].identity("boot", 2)
+assert after[OLD_DFID_NAME].name == b"before" and after[NEW_DFID_NAME].name == b"after"
+directory = next(decode_events(file_event(ON_DIRECTORY | 0x20, file_record(DFID_NAME, b"object", b"."))))
+provenance = FileProvenance("/", "/tmp/preview-file-provenance.jsonl")
+provenance.device = 1
+with patch.object(provenance, "resolve_path", return_value=b"/folder"):
+    observation, = provenance.materialize(*directory)
+assert observation["openedr_file_object_id"] == before[FID].identity(provenance.boot_id, 1)
+assert observation["openedr_file_path"] == "/folder" and "openedr_file_parent_id" not in observation
+try:
+    list(decode_events(rename[:-1]))
+except ValueError:
+    pass
+else:
+    raise AssertionError("Accepted a truncated native fanotify event")
+
 response_feed = ElementTree.parse(integration / "response-localfile.xml")
 assert response_feed.findtext("location") == "/var/log/all-os-openedr-response/actions.jsonl"
 assert response_feed.findtext("log_format") == "json"
@@ -284,6 +324,12 @@ for key, field_type in (
     ("openedr_missing_events", "long"),
     ("openedr_response_lease", "keyword"),
     ("openedr_response_deadline_ms", "long"),
+    ("openedr_file_actor_id", "keyword"),
+    ("openedr_file_object_id", "keyword"),
+    ("openedr_file_mask", "long"),
+    ("openedr_file_notification_id", "keyword"),
+    ("openedr_file_observed_uid", "long"),
+    ("openedr_file_old_path", "keyword"),
 ):
     assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
@@ -307,13 +353,16 @@ cmp LICENSE.md "$work/package/usr/share/doc/all-os-openedr/copyright"
 test -f "$work/package/usr/lib/systemd/system/all-os-openedr.service"
 cmp packaging/debian/all-os-openedr-lifecycle.service \
     "$work/package/usr/lib/systemd/system/all-os-openedr-lifecycle.service"
+cmp packaging/debian/all-os-openedr-file-provenance.service \
+    "$work/package/usr/lib/systemd/system/all-os-openedr-file-provenance.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml \
-    lifecycle-localfile.xml response-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
+    lifecycle-localfile.xml file-provenance-localfile.xml response-localfile.xml \
+    110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done
