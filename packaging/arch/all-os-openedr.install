@@ -1,0 +1,6 @@
+pre_remove() {
+    if [ -d /run/systemd/system ]; then
+        systemctl stop all-os-openedr.service || return
+    fi
+    systemctl --root=/ disable all-os-openedr.service
+}

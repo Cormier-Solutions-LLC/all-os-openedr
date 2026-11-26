@@ -75,6 +75,9 @@ jobs:
       - name: Verify preview
         if: steps.version.outputs.version == ''
         run: sh scripts/check-preview.sh
+      - name: Verify Arch package and dependencies
+        if: steps.version.outputs.version == ''
+        run: sh scripts/build-arch-container.sh --target check --output type=cacheonly
       - name: Build release assets
         if: steps.version.outputs.version != ''
         env:
@@ -125,7 +128,7 @@ jobs:
           for asset in ./*; do [[ "$asset" == *"$VERSION"* ]]; done
           if grep -Eq '(^|[ /])\.\.(/|$)|  /' "SHA256SUMS-$VERSION.txt"; then exit 1; fi
           sha256sum --check "SHA256SUMS-$VERSION.txt"
-          notes="This software is subject to the terms of the Comodo Available Source License Agreement. Preview assets include the Debian package, the read-only management API image and Helm chart, and the RPM and Alpine APK build recipes."
+          notes="This software is subject to the terms of the Comodo Available Source License Agreement. Preview assets include Debian and Arch Linux packages, the read-only management API image and Helm chart, and the RPM and Alpine APK build recipes."
           if [[ "$CHANNEL" == stable ]]; then
             tag="v$VERSION"
             target_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha)

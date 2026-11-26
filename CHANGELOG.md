@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- Publish versioned Arch Linux packages with pacman support for upgrading from nightly to stable.
+- Reuse the hardened systemd service, leave startup opt-in, and retain event logs on package removal.
+
 ## 0.4.0
 
 - Add a locally signed Alpine APK source build with a supervised, opt-in OpenRC service that runs as an unprivileged account.
