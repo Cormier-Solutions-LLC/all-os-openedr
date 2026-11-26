@@ -78,7 +78,7 @@ class Lifecycle:
         self.boot_id = boot_id
         self.host = host
         self.stream_id = uuid.uuid4().hex
-        self.leader_births = {}
+        self.processes = {}
         self.sequences = {}
 
     def event(self, name, event_id):
@@ -94,7 +94,7 @@ class Lifecycle:
         }
 
     def gap(self, reason, cpu=None, count=None):
-        self.leader_births.clear()
+        self.processes.clear()
         event = self.event("process.stream_gap", uuid.uuid4().hex)
         event["openedr_gap_reason"] = reason
         if cpu is not None:
@@ -133,12 +133,22 @@ class Lifecycle:
         if pid < 1 or tid < 1:
             return
         leader = pid == tid
-        parent_identity = self.leader_births.get(parent_pid)
+        parent = self.processes.get(parent_pid)
         if kind == FORK and leader:
-            self.leader_births[pid] = self.identity(pid, stamp)
-        identity = self.leader_births.get(pid)
-        if kind == EXIT and leader:
-            self.leader_births.pop(pid, None)
+            self.processes[pid] = (self.identity(pid, stamp), {tid})
+        process = self.processes.get(pid)
+        if process is not None:
+            _, members = process
+            if kind == FORK:
+                members.add(tid)
+            elif kind == EXEC:
+                # A successful exec replaces the other threads in this group.
+                members.clear()
+                members.add(tid)
+            else:
+                members.discard(tid)
+                if not members:
+                    self.processes.pop(pid)
 
         key = f"{self.boot_id}:connector:{cpu}:{sequence}:{stamp}"
         event = self.event(name, hashlib.sha256(key.encode()).hexdigest())
@@ -150,16 +160,16 @@ class Lifecycle:
             "openedr_kernel_sequence": sequence,
             "openedr_kernel_monotonic_ns": stamp,
         })
-        if identity is not None:
-            event["openedr_process_id"] = identity
+        if process is not None:
+            event["openedr_process_id"] = process[0]
         if kind == EXIT:
             wait_status, _, parent_tid, parent_pid = struct.unpack_from("=IIii", payload, 8)
             event["openedr_wait_status"] = wait_status
         if parent_pid > 0:
             event["openedr_parent_pid"] = parent_pid
             event["openedr_parent_tid"] = parent_tid
-        if parent_identity is not None:
-            event["openedr_parent_process_id"] = parent_identity
+        if parent is not None:
+            event["openedr_parent_process_id"] = parent[0]
         yield event
 
 

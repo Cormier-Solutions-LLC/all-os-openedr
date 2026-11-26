@@ -26,7 +26,7 @@ sudo systemctl status all-os-openedr-lifecycle.service
 sudo head -n 1 /var/log/all-os-openedr-lifecycle/events.jsonl
 ```
 
-Fork events carry the parent PID and thread ID, and link to the parent's process identity when its birth was observed. An observed thread group leader's birth supplies the identity carried by subsequent events in the same stream. Task exits record the raw Linux wait status and distinguish leader exits from worker-thread exits. A leader exit alone does not establish that its entire thread group has exited. The kernel does not supply the executable path in these events. Use the separate Audit collector when you need executable path evidence.
+Fork events carry the parent PID and thread ID, and link to the parent's process identity when its birth was observed. The collector keeps that identity while observed members of the thread group remain alive. Task exits record the raw Linux wait status and distinguish leader exits from worker-thread exits. Use the separate Audit collector for executable path evidence.
 
 Each service start emits a new stream ID. Running processes whose births predate the stream can still emit lifecycle events with host PIDs. Their earlier process identities are unavailable in the new stream. Kernel event IDs incorporate boot ID, CPU, kernel sequence, and monotonic time. When the collector detects loss, it emits `process.stream_gap` and discards prior lineage so subsequent records do not inherit uncertain process identities. Review stream gaps before using the events for a complete timeline.
 

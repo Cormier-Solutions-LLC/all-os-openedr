@@ -158,8 +158,18 @@ assert reused["openedr_process_id"] != fork_child["openedr_process_id"]
 gap, uncorrelated = ingest(EXEC, 4, 420, struct.pack("=ii", 201, 201))
 assert gap["openedr_event"] == "process.stream_gap" and gap["openedr_missing_events"] == 1
 assert "openedr_process_id" not in uncorrelated
+threaded, = ingest(FORK, 5, 430, struct.pack("=iiii", 1, 1, 300, 300))
+thread, = ingest(FORK, 6, 440, struct.pack("=iiii", 1, 1, 301, 300))
+leader_exit, = ingest(EXIT, 7, 450, struct.pack("=iiIIii", 300, 300, 0, 17, 1, 1))
+worker_child, = ingest(FORK, 8, 460, struct.pack("=iiii", 301, 300, 302, 302))
+worker_exit, = ingest(EXIT, 9, 470, struct.pack("=iiIIii", 301, 300, 0, 17, 1, 1))
+assert thread["openedr_process_id"] == threaded["openedr_process_id"]
+assert leader_exit["openedr_thread_group_leader"] and not worker_exit["openedr_thread_group_leader"]
+assert worker_child["openedr_parent_process_id"] == threaded["openedr_process_id"]
+assert worker_exit["openedr_process_id"] == threaded["openedr_process_id"]
+assert 300 not in tracker.processes
 try:
-    list(proc_records(kernel_event(EXEC, 0, 5, 450, struct.pack("=ii", 201, 201))[:-1]))
+    list(proc_records(kernel_event(EXEC, 0, 10, 480, struct.pack("=ii", 201, 201))[:-1]))
 except StreamGap:
     pass
 else:
