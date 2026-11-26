@@ -1,0 +1,5 @@
+- pipeline.id: openedr-wazuh
+  path.config: /usr/share/logstash/pipeline/openedr-opensearch.conf
+  queue.type: persisted
+  queue.max_bytes: 256mb
+  queue.checkpoint.writes: 1

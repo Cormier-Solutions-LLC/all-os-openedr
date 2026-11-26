@@ -35,6 +35,16 @@ fixture = json.loads(Path("integrations/wazuh/process-observed.json").read_text(
 assert set(events[0]) == set(fixture)
 assert ElementTree.parse("integrations/wazuh/localfile.xml").findtext("log_format") == "json"
 assert ElementTree.parse("integrations/wazuh/110100-openedr_rules.xml").find("rule[@id='110101']") is not None
+integration = Path("integrations/wazuh")
+dedicated_indices = ["openedr-alerts-v1-*"]
+template = json.loads((integration / "openedr-index-template.json").read_text())
+assert template["index_patterns"] == dedicated_indices
+assert template["template"]["mappings"]["dynamic"] is False
+for role in ("reader", "writer"):
+    policy = json.loads((integration / f"openedr-{role}-role.json").read_text())
+    assert [permission["index_patterns"] for permission in policy["index_permissions"]] == [dedicated_indices]
+retention = json.loads((integration / "openedr-retention-policy.json").read_text())
+assert [entry["index_patterns"] for entry in retention["policy"]["ism_template"]] == [dedicated_indices]
 PY
 if sh packaging/macos/install.sh; then
     printf 'The macOS stub unexpectedly reported success.\n' >&2

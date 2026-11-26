@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add dedicated OpenSearch mappings, narrowly scoped forwarding and search roles, and an example retention policy.
+- Route identical Wazuh alert replays by their original observation date and event ID. Provide a bounded persistent queue for interruption recovery.
+
 ## 0.2.0
 
 - Add RPM source builds for Enterprise Linux and Fedora, with container checks for Rocky Linux 9 and 10 and Fedora 44.

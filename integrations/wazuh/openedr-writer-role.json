@@ -1,0 +1,13 @@
+{
+  "cluster_permissions": ["cluster:monitor/main", "indices:data/write/bulk"],
+  "index_permissions": [
+    {
+      "index_patterns": ["openedr-alerts-v1-*"],
+      "allowed_actions": [
+        "indices:admin/create",
+        "indices:data/write/bulk*",
+        "indices:data/write/index"
+      ]
+    }
+  ]
+}

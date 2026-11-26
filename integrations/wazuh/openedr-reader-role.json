@@ -1,0 +1,9 @@
+{
+  "cluster_permissions": [],
+  "index_permissions": [
+    {
+      "index_patterns": ["openedr-alerts-v1-*"],
+      "allowed_actions": ["indices:data/read/search*"]
+    }
+  ]
+}
