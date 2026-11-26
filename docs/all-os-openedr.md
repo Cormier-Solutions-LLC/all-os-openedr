@@ -134,14 +134,17 @@ Rsyslog routes the share's original VFS audit payloads under the dedicated `open
 
 Enable this response only on enrolled Debian 13 endpoints with an out-of-band recovery console. The endpoint's kernel blocks IPv4 and IPv6 input, output, and routed forwarding while the lease is active. It keeps loopback, IPv6 neighbor discovery, and the outbound TCP connection to one configured Wazuh manager address. Existing endpoint firewall rules still apply. Use a stable address and route, and check management and console access before enabling the response. Layer 2 forwarding, separately attached network namespaces, and a privileged process that can alter firewall rules require their own controls.
 
-1. Install `nftables` and `openssh-client` on the endpoint. Create `/etc/all-os-openedr/` owned by root. Give each endpoint a unique 32-character lowercase hexadecimal ID, set its enrolled Wazuh agent ID, and specify its manager's literal address and TCP port in root-owned `response.json` with mode `0600`. For example, `{"endpoint":"e24d48c344944aa9a902cbc5ed56b7495","agent":"001","manager":{"ip":"192.0.2.10","port":1514}}`.
+1. Install `nftables` and `openssh-client` on the endpoint. Create `/etc/all-os-openedr/` owned by root. Give each endpoint a unique 32-character lowercase hexadecimal ID, set its enrolled Wazuh agent ID, and specify its manager's literal address and TCP port in root-owned `response.json` with mode `0600`. For example, `{"endpoint":"e24d48c344944aa9a902cbc5ed56b749","agent":"001","manager":{"ip":"192.0.2.10","port":1514}}`.
 2. Put each approved operator's public signing key in root-owned `response-signers` with mode `0600`. An allowed-signers entry starts with the operator identity, then `namespaces="all-os-openedr-response-v1"` and the public key. Keep the private keys on operator workstations. Give the dispatch account the Wazuh `active-response:command` permission only for the intended `agent:id` or group. [OpenSSH allowed signers](https://man.openbsd.org/ssh-keygen#ALLOWED_SIGNERS) · [Wazuh RBAC](https://documentation.wazuh.com/current/user-manual/api/rbac/reference.html)
-3. Install the packaged Wazuh launcher with the following command. Add [the response localfile stanza](../integrations/wazuh/response-localfile.xml) on the endpoint and reload the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Set up the dedicated OpenSearch template version 3 if using that forwarding route. Keep automatic alert triggers disabled for this launcher.
+3. Install the packaged Wazuh launcher and prepare its audit log as shown below. Enable Active Response and add [the response localfile stanza](../integrations/wazuh/response-localfile.xml) on the endpoint. Reload the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Set up the dedicated OpenSearch template version 3 if using that forwarding route. Keep automatic alert triggers disabled for this launcher.
 
 ```sh
 sudo install -o root -g wazuh -m 0750 \
   /usr/share/all-os-openedr/wazuh/all-os-openedr-response \
   /var/ossec/active-response/bin/all-os-openedr-response
+sudo install -d -m 0700 /var/log/all-os-openedr-response
+sudo touch /var/log/all-os-openedr-response/actions.jsonl
+sudo chmod 0600 /var/log/all-os-openedr-response/actions.jsonl
 ```
 
 Select the alert and verify its endpoint in Wazuh. Use a synchronized signer workstation and endpoint clock. The endpoint accepts an approval for up to 60 seconds after signing. The example signs a 120-second lease and sends it to agent `001`. Set `ENDPOINT_ID`, `ALERT_ID`, and `SIGNING_KEY` from your environment. `WAZUH_AUTH_HEADER` is a private file containing the API authorization header, and `WAZUH_CA` is the API's trusted CA certificate.

@@ -149,7 +149,7 @@ def owned_table():
                and item["table"].get("name") == "all_os_openedr_response" for item in tables):
         return None, False
     entries = json.loads(nft("-j", "list", "table", *TABLE.split()))["nftables"]
-    comment = next(item["table"].get("comment", "") for item in entries if "table" in item)
+    comment = next((item["table"].get("comment", "") for item in entries if "table" in item), "")
     require(comment.startswith(TABLE_COMMENT) and matches(ENDPOINT, comment[len(TABLE_COMMENT):]),
             "foreign_firewall_table")
     lease_set = next((item["set"] for item in entries if item.get("set", {}).get("name") == "lease"), None)
@@ -281,10 +281,11 @@ def serve(local_release):
             apply(request, address, port)
         return 0
     except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
-        reason = str(error) if type(error) is ValueError and re.fullmatch("[a-z_]+", str(error)) else "response_error"
+        rejected = type(error) is ValueError and re.fullmatch("[a-z_]+", str(error))
+        reason = str(error) if rejected else "response_error"
         if audit_ready:
             try:
-                audit("rejected", request, reason)
+                audit("rejected" if rejected else "error", request, reason)
             except (OSError, ValueError):
                 pass
         print(f"all-os-openedr response: {reason}", file=sys.stderr)

@@ -7,8 +7,8 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
-import json
 import base64
+import json
 import re
 import struct
 import sys
