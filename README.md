@@ -5,6 +5,7 @@ This repository preserves the source and history of [ComodoSecurity/openedr](htt
 | Component | Current scope |
 | --- | --- |
 | Debian 13 | Versioned package for an unprivileged, polling process telemetry preview |
+| Enterprise Linux and Fedora | RPM source builds with container qualification on Rocky Linux 9 and 10 and Fedora 44 |
 | Wazuh | Direct JSON log collection and a manager rule for preview events |
 | OpenSearch | Wazuh alert forwarding example for an existing TLS-protected cluster |
 | Kubernetes | Helm chart and read-only management API for this telemetry |
