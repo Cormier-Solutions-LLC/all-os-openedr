@@ -101,6 +101,9 @@ jobs:
     name: Publish preview assets
     needs: maintainer
     if: needs.maintainer.outputs.version != ''
+    concurrency:
+      group: preview-publication-${{ needs.maintainer.outputs.version }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -136,21 +139,16 @@ jobs:
               IFS=$'\t' read -r pr reviewed_head <<< "$entry"
               reviewed_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$reviewed_head" --jq .tree.sha)
               [[ "$target_tree" == "$reviewed_tree" ]] || continue
-              review=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
-                --jq ".[] | select(.commit_id == \"$reviewed_head\" and .user.login == \"chatgpt-codex-connector[bot]\" and .state != \"DISMISSED\") | .id")
+              review=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
+                --jq ".[] | select(.user.login == \"chatgpt-codex-connector[bot]\") | .body |
+                  split(\"\\n\")[] | select(startswith(\"<!-- codex-review-state:v1 \")) |
+                  ltrimstr(\"<!-- codex-review-state:v1 \") | rtrimstr(\" -->\") | fromjson | .code_review |
+                  select(.commit_sha == \"$reviewed_head\" and .status == \"completed\" and
+                    .has_unresolved_findings == false) | .status")
               if [[ -n "$review" ]]; then reviewed=true; break; fi
-              mapfile -t requests < <(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
-                --jq ".[] | select(.user.login == \"cormierconsulting\" and
-                  (.body | contains(\"<!-- all-os-openedr-review: $reviewed_head -->\")) and
-                  (.body | startswith(\"@codex review\"))) | .id")
-              for request in "${requests[@]}"; do
-                reaction=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/comments/$request/reactions" \
-                  --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id')
-                if [[ -n "$reaction" ]]; then reviewed=true; break 2; fi
-              done
             done
             if [[ "$reviewed" != true ]]; then
-              echo "Stable publication requires a Codex review associated with the release commit."
+              echo "Stable publication requires a completed Codex review with no unresolved findings on the release tree."
               exit 1
             fi
             options=(--verify-tag --latest)

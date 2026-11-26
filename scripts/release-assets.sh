@@ -16,7 +16,7 @@ sh scripts/check-preview.sh
 sh packaging/debian/build.sh "$version" "$output"
 git archive --format=tar.gz --prefix="all-os-openedr-${version}/" \
     --output="$output/all-os-openedr-preview-source-${version}.tar.gz" HEAD \
-    LICENSE.md NOTICE.md README.md VERSION .dockerignore all_os_openedr deploy integrations packaging scripts docs/all-os-openedr.md
+    LICENSE.md NOTICE.md README.md CHANGELOG.md VERSION .dockerignore all_os_openedr deploy integrations packaging scripts docs/all-os-openedr.md
 cp -R deploy/chart "$work/chart"
 cp LICENSE.md NOTICE.md "$work/chart/"
 helm package "$work/chart" --version "$version" --app-version "$version" --destination "$output"

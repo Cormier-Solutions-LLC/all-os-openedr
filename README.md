@@ -11,7 +11,7 @@ This repository preserves the source and history of [ComodoSecurity/openedr](htt
 | macOS | Installer entry point stub |
 | Windows | Upstream Windows source. Downstream Windows binaries require separate redistribution clearance and a working build. |
 
-See the [installation and delivery guide](docs/all-os-openedr.md), [project board](https://github.com/orgs/Cormier-Solutions-LLC/projects/5), and [milestones](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestones).
+See the [installation and delivery guide](docs/all-os-openedr.md), [release notes](CHANGELOG.md), [downloads](https://github.com/Cormier-Solutions-LLC/all-os-openedr/releases), [project board](https://github.com/orgs/Cormier-Solutions-LLC/projects/5), and [milestones](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestones).
 
 ## Upstream OpenEDR documentation
 [![OpenEDR](https://techtalk.comodo.com/wp-content/uploads/2020/09/logo_small.jpg)](https://openedr.com/)
