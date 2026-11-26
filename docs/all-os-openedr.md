@@ -4,10 +4,10 @@ This software is subject to the terms of the Comodo Available Source License Agr
 
 ## Debian 13
 
-Use the versioned `all-os-openedr_<version>_all.deb` asset in the private repository's releases. From the source checkout, build it with `sh packaging/debian/build.sh 0.1.0 ./dist` on Debian.
+Use the versioned `all-os-openedr_<version>_all.deb` asset in the private repository's releases. From the source checkout, build it with `sh packaging/debian/build.sh "$(cat VERSION)" ./dist` on Debian.
 
 ```sh
-sudo apt install ./all-os-openedr_0.1.0_all.deb
+sudo apt install ./all-os-openedr_0.2.0_all.deb
 sudo systemctl enable --now all-os-openedr.service
 sudo systemctl status all-os-openedr.service
 sudo head -n 1 /var/log/all-os-openedr/events.jsonl
@@ -51,7 +51,9 @@ helm upgrade --install openedr ./deploy/chart --namespace openedr --create-names
   -f /path/to/site-values.yaml --wait --timeout 5m
 ```
 
-`/healthz` checks the process, `/readyz` checks OpenSearch query access, and `/v1/events` requires the management bearer token. Rehearse pod disruption, an OpenSearch outage and recovery, upgrade, and rollback before production use. The preview provides read access to telemetry.
+`/healthz` checks the process, `/readyz` checks OpenSearch query access, and `/v1/events` requires the management bearer token. During an indexer outage, the manager remains live and withdraws from the Service until readiness recovers. The preview provides read access to telemetry.
+
+Qualification used a local Kubernetes 1.35.8 cluster with three workers and a TLS fixture. The manager served authenticated traffic during a rolling upgrade, pod replacement, and a planned worker drain. After the drain, the remaining two workers carried all three replicas. Rehearse these operations against your site topology and capacity before enabling live traffic.
 
 ## Plugin contract
 
