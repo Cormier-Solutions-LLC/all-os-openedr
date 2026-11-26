@@ -4,5 +4,6 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
 fi
 if [ "$1" = purge ]; then
-    deb-systemd-helper purge all-os-openedr.service all-os-openedr-lifecycle.service >/dev/null
+    deb-systemd-helper purge all-os-openedr.service all-os-openedr-lifecycle.service \
+        all-os-openedr-file-provenance.service >/dev/null
 fi

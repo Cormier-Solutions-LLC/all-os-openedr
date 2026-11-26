@@ -3,8 +3,10 @@ set -eu
 case "$1" in
     remove|deconfigure)
         if [ -d /run/systemd/system ]; then
-            deb-systemd-invoke stop all-os-openedr.service all-os-openedr-lifecycle.service
+            deb-systemd-invoke stop all-os-openedr.service all-os-openedr-lifecycle.service \
+                all-os-openedr-file-provenance.service
         fi
-        deb-systemd-helper disable all-os-openedr.service all-os-openedr-lifecycle.service >/dev/null
+        deb-systemd-helper disable all-os-openedr.service all-os-openedr-lifecycle.service \
+            all-os-openedr-file-provenance.service >/dev/null
         ;;
 esac
