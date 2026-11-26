@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .executable import ExecutableOpen
 from .file_provenance import FileProvenance
 from .plugins import API_VERSION, Plugin, Registry
 from .proc_connector import LinuxProcConnector
@@ -77,6 +78,7 @@ PLUGINS = Registry({
     "linux-processes": Plugin("collector", API_VERSION, LinuxProcesses),
     "linux-proc-connector": Plugin("collector", API_VERSION, LinuxProcConnector),
     "linux-file-provenance": Plugin("collector", API_VERSION, FileProvenance),
+    "linux-executable-open": Plugin("collector", API_VERSION, ExecutableOpen),
     "json-lines": Plugin("sink", API_VERSION, JsonLines),
 })
 
@@ -87,22 +89,28 @@ def main():
     parser.add_argument("--sink", default="json-lines")
     parser.add_argument("--output", default="/var/log/all-os-openedr/events.jsonl")
     parser.add_argument("--interval", type=float, default=2.0)
-    parser.add_argument("--filesystem", help="mounted filesystem root for the file provenance collector")
+    parser.add_argument("--filesystem", help="mounted filesystem root for the selected fanotify collector")
+    parser.add_argument("--executable-catalog", help="local SHA-256 verdict catalog for linux-executable-open")
     parser.add_argument("--once", action="store_true")
     options = parser.parse_args()
     if platform.system() != "Linux":
         parser.error("The process collector requires Linux")
     if not math.isfinite(options.interval) or options.interval < 0.25:
         parser.error("--interval must be finite and at least 0.25 seconds")
-    if options.collector == "linux-file-provenance" and options.filesystem is None:
-        parser.error("linux-file-provenance requires --filesystem")
-    if options.filesystem is not None and options.collector != "linux-file-provenance":
-        parser.error("--filesystem applies to linux-file-provenance")
+    filesystem_collectors = {"linux-file-provenance", "linux-executable-open"}
+    if options.collector in filesystem_collectors and options.filesystem is None:
+        parser.error(f"{options.collector} requires --filesystem")
+    if options.filesystem is not None and options.collector not in filesystem_collectors:
+        parser.error("--filesystem applies to the built-in fanotify collectors")
+    if options.executable_catalog is not None and options.collector != "linux-executable-open":
+        parser.error("--executable-catalog applies to linux-executable-open")
     os.umask(0o027)
     try:
         collector_options = (
             {"filesystem": options.filesystem, "output": options.output} if options.filesystem is not None else {}
         )
+        if options.executable_catalog is not None:
+            collector_options["executable_catalog"] = options.executable_catalog
         collector = PLUGINS.create(options.collector, "collector", **collector_options)
         sink = PLUGINS.create(options.sink, "sink", output=options.output)
         stream = getattr(collector, "stream", None)

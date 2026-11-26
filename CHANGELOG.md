@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Add opt-in Debian executable evidence from kernel event descriptors, with SHA-256, offline catalog verdicts, and Wazuh alerts for untrusted matches.
 - Add opt-in Debian configuration change monitoring for selected system and user paths, with Linux Audit attribution and a Wazuh investigation rule.
 - Add opt-in Debian file provenance with kernel file handles, rename pairs, process attribution, and Wazuh queue overflow alerts.
 - Add opt-in Debian network isolation through Wazuh with signed endpoint-scoped approvals, audit records, and kernel-timed recovery.

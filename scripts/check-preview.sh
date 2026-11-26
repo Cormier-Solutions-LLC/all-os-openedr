@@ -8,7 +8,11 @@ trap 'rm -rf -- "$work"' EXIT
 python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
 import base64
+import ctypes
+import errno
+import hashlib
 import json
+import os
 import re
 import struct
 import sys
@@ -21,6 +25,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
+from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -28,6 +33,42 @@ from all_os_openedr.response import apply, decode_token
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
 with TemporaryDirectory() as temporary:
+    candidate = Path(temporary) / "candidate"
+    content = b"#!/bin/sh\nexit 0\n"
+    digest = hashlib.sha256(content).hexdigest()
+    candidate.write_bytes(content)
+    with candidate.open("rb") as opened:
+        candidate.unlink()
+        candidate.write_bytes(b"replacement")
+        observation = inspect_descriptor(opened.fileno())
+        assert observation["openedr_executable_sha256"] == digest
+        assert observation["openedr_executable_format"] == "script"
+        assert observation["openedr_executable_path"].endswith(" (deleted)")
+    with candidate.open("wb+") as opened:
+        opened.truncate(MAX_EXECUTABLE_SIZE + 1)
+        observation = inspect_descriptor(opened.fileno())
+        assert observation["openedr_executable_measurement"] == "size_limit"
+        assert "openedr_executable_sha256" not in observation
+    catalog = Path(temporary) / "catalog.json"
+    catalog.write_text(json.dumps({"schema": 1, "verdicts": {digest: "trusted"}}))
+    if os.geteuid() == 0:
+        assert read_catalog(catalog)[1] == {digest: "trusted"}
+    catalog.chmod(0o666)
+    assert read_catalog(catalog) == (None, {})
+    assert read_catalog(None) == (None, {})
+
+    calls = []
+    def fanotify_init(init_flags, event_flags):
+        calls.append(init_flags)
+        if len(calls) == 1:
+            ctypes.set_errno(errno.EINVAL)
+            return -1
+        return 42
+    collector = ExecutableOpen.__new__(ExecutableOpen)
+    collector.libc = SimpleNamespace(fanotify_init=fanotify_init)
+    assert collector.open_channel() == 42
+    assert calls == [collector.init_flags | collector.optional_init_flags, collector.init_flags]
+
     protected = Path(temporary) / "approved-tool"
     protected.touch(mode=0o700)
     path = executable(str(protected))
@@ -351,6 +392,9 @@ for key, field_type in (
     ("openedr_file_notification_id", "keyword"),
     ("openedr_file_observed_uid", "long"),
     ("openedr_file_old_path", "keyword"),
+    ("openedr_executable_sha256", "keyword"),
+    ("openedr_executable_verdict", "keyword"),
+    ("openedr_executable_size", "long"),
 ):
     assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
@@ -376,13 +420,15 @@ cmp packaging/debian/all-os-openedr-lifecycle.service \
     "$work/package/usr/lib/systemd/system/all-os-openedr-lifecycle.service"
 cmp packaging/debian/all-os-openedr-file-provenance.service \
     "$work/package/usr/lib/systemd/system/all-os-openedr-file-provenance.service"
+cmp packaging/debian/all-os-openedr-executable.service \
+    "$work/package/usr/lib/systemd/system/all-os-openedr-executable.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml \
-    lifecycle-localfile.xml file-provenance-localfile.xml response-localfile.xml \
+    lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml \
     110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"

@@ -41,6 +41,7 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/samba-localfile.xml" \
     "$root/integrations/wazuh/lifecycle-localfile.xml" \
     "$root/integrations/wazuh/file-provenance-localfile.xml" \
+    "$root/integrations/wazuh/executable-localfile.xml" \
     "$root/integrations/wazuh/response-localfile.xml" \
     "$root/integrations/wazuh/openedr-samba_decoders.xml" \
     "$root/integrations/wazuh/110100-openedr_rules.xml" \
@@ -49,7 +50,8 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
 install -m 0644 "$root/integrations/samba/rsyslog.conf" "$stage/usr/share/all-os-openedr/samba/"
 install -m 0644 "$root/packaging/debian/all-os-openedr.service" \
     "$root/packaging/debian/all-os-openedr-lifecycle.service" \
-    "$root/packaging/debian/all-os-openedr-file-provenance.service" "$stage/usr/lib/systemd/system/"
+    "$root/packaging/debian/all-os-openedr-file-provenance.service" \
+    "$root/packaging/debian/all-os-openedr-executable.service" "$stage/usr/lib/systemd/system/"
 install -m 0755 "$root/packaging/debian/prerm" "$stage/DEBIAN/prerm"
 install -m 0755 "$root/packaging/debian/postinst" "$stage/DEBIAN/postinst"
 install -m 0755 "$root/packaging/debian/postrm" "$stage/DEBIAN/postrm"

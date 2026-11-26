@@ -20,9 +20,11 @@ INFO_HEADER = struct.Struct("=BBH")
 HANDLE_HEADER = struct.Struct("=Ii")
 PIDFD_RECORD = struct.Struct("=i")
 FID, DFID_NAME, DFID, PIDFD, OLD_DFID_NAME, NEW_DFID_NAME = 1, 2, 3, 4, 10, 12
+FILE_DESCRIPTOR = "file_descriptor"
 OVERFLOW = 0x4000
 RENAME = 0x10000000
 ON_DIRECTORY = 0x40000000
+OPEN_EXEC = 0x00001000
 EVENTS = {
     0x00000001: "file.access",
     0x00000002: "file.modify",
@@ -32,7 +34,7 @@ EVENTS = {
     0x00000020: "file.open",
     0x00000100: "file.create",
     0x00000200: "file.delete",
-    0x00001000: "file.open_exec",
+    OPEN_EXEC: "file.open_exec",
     RENAME: "file.rename",
 }
 EVENT_MASK = ON_DIRECTORY | sum(EVENTS)
@@ -63,6 +65,8 @@ def decode_events(data):
         end = offset + size
         cursor = offset + metadata_size
         records = {}
+        if file_fd >= 0:
+            records[FILE_DESCRIPTOR] = file_fd
         pidfd = -1
         try:
             while cursor < end:
@@ -124,15 +128,15 @@ class CapWord(ctypes.Structure):
     _fields_ = (("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32), ("inheritable", ctypes.c_uint32))
 
 
-def drop_setup_capabilities(libc):
-    # Set no_new_privs, clear ambient capabilities, then retain only DAC_READ_SEARCH.
+def drop_setup_capabilities(libc, retain_read_search=True):
+    # Set no_new_privs, clear ambient capabilities, then set the final capability set.
     checked(libc.prctl(38, 1, 0, 0, 0), "PR_SET_NO_NEW_PRIVS")
     checked(libc.prctl(47, 4, 0, 0, 0), "PR_CAP_AMBIENT_CLEAR_ALL")
     header = CapHeader(0x20080522, 0)
     words = (CapWord * 2)()
     checked(libc.capget(ctypes.byref(header), words), "capget")
-    read_search = 1 << 2
-    if not words[0].effective & read_search:
+    read_search = (1 << 2) if retain_read_search else 0
+    if retain_read_search and not words[0].effective & read_search:
         raise ValueError("file provenance path resolution requires CAP_DAC_READ_SEARCH")
     words[0] = CapWord(read_search, read_search, 0)
     words[1] = CapWord(0, 0, 0)
@@ -189,7 +193,9 @@ def visible_text(raw):
     return raw.decode("utf-8", errors="backslashreplace")
 
 
-class FileProvenance:
+class FanotifyFilesystem:
+    optional_init_flags = 0
+
     def __init__(self, filesystem, output):
         self.filesystem = Path(filesystem).resolve(strict=True)
         if not self.filesystem.is_dir() or not self.filesystem.is_mount():
@@ -217,6 +223,91 @@ class FileProvenance:
 
     def gap(self, reason):
         return {**self.base_event("file.stream_gap"), "openedr_gap_reason": reason}
+
+    def same_mount(self, expected):
+        try:
+            fd = os.open(self.filesystem, PATH_OPEN_FLAGS | os.O_DIRECTORY)
+        except OSError:
+            return False
+        try:
+            return fd_field(fd, "mnt_id") == expected and os.fstat(fd).st_dev == self.device
+        finally:
+            os.close(fd)
+
+    def writes_to_watched_filesystem(self):
+        target = self.output.resolve()
+        try:
+            return target.stat().st_dev == self.device
+        except FileNotFoundError:
+            return target.parent.stat().st_dev == self.device
+
+    def open_channel(self):
+        event_flags = os.O_RDONLY | os.O_CLOEXEC
+        fd = self.libc.fanotify_init(self.init_flags | self.optional_init_flags, event_flags)
+        if fd < 0 and self.optional_init_flags and ctypes.get_errno() == errno.EINVAL:
+            fd = self.libc.fanotify_init(self.init_flags, event_flags)
+        return checked(fd, "fanotify_init")
+
+    def stream(self):
+        # Linux 6.12 open_by_handle_at uses fdget(), which rejects an O_PATH mount descriptor.
+        self.mount_fd = os.open(self.filesystem, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
+        try:
+            self.device = os.fstat(self.mount_fd).st_dev
+            if self.separate_output and self.writes_to_watched_filesystem():
+                raise ValueError("file provenance logs require a different filesystem from the watch target")
+            mount_id = fd_field(self.mount_fd, "mnt_id")
+            if not mount_id:
+                raise ValueError("the selected filesystem has no visible mount ID")
+            fd = self.open_channel()
+            try:
+                checked(self.libc.fanotify_mark(fd, FAN_MARK, self.event_mask, self.mount_fd, b"."), "fanotify_mark")
+                drop_setup_capabilities(self.libc, self.retain_read_search)
+                poller = select.poll()
+                poller.register(fd, select.POLLIN)
+                next_check = time.monotonic()
+                yield [self.base_event(self.watch_start_event)]
+                while True:
+                    if time.monotonic() >= next_check:
+                        next_check = time.monotonic() + 2
+                        if not self.same_mount(mount_id):
+                            yield [self.gap("file_watch_target_changed")]
+                            raise ValueError("the watched mount changed")
+                        if self.separate_output and self.writes_to_watched_filesystem():
+                            raise ValueError("file provenance logs moved onto the watched filesystem")
+                    notifications = poller.poll(500)
+                    if not notifications:
+                        continue
+                    if notifications[0][1] & (select.POLLERR | select.POLLHUP | select.POLLNVAL):
+                        yield [self.gap("fanotify_channel_error")]
+                        raise ValueError("the fanotify channel failed")
+                    batch = []
+                    try:
+                        # PIDFDs are installed during read, so consume the entire batch before yielding.
+                        data = os.read(fd, 64 * 1024)
+                        if not data:
+                            raise ValueError("fanotify returned an empty batch")
+                        for mask, pid, records in decode_events(data):
+                            batch.extend(self.materialize(mask, pid, records))
+                    except BlockingIOError:
+                        continue
+                    except (OSError, ValueError):
+                        yield [*batch, self.gap("fanotify_batch_error")]
+                        raise
+                    if batch:
+                        yield batch
+            finally:
+                os.close(fd)
+        finally:
+            os.close(self.mount_fd)
+            self.mount_fd = -1
+
+
+class FileProvenance(FanotifyFilesystem):
+    init_flags = FAN_INIT
+    event_mask = EVENT_MASK
+    retain_read_search = True
+    separate_output = True
+    watch_start_event = "file.watch_started"
 
     def resolve_path(self, handle):
         fd = self.libc.open_by_handle_at(self.mount_fd, handle.encoded, PATH_OPEN_FLAGS)
@@ -292,73 +383,3 @@ class FileProvenance:
             }
             for bit, kind in EVENTS.items() if mask & bit
         ]
-
-    def same_mount(self, expected):
-        try:
-            fd = os.open(self.filesystem, PATH_OPEN_FLAGS | os.O_DIRECTORY)
-        except OSError:
-            return False
-        try:
-            return fd_field(fd, "mnt_id") == expected and os.fstat(fd).st_dev == self.device
-        finally:
-            os.close(fd)
-
-    def writes_to_watched_filesystem(self):
-        target = self.output.resolve()
-        try:
-            return target.stat().st_dev == self.device
-        except FileNotFoundError:
-            return target.parent.stat().st_dev == self.device
-
-    def stream(self):
-        # Linux 6.12 open_by_handle_at uses fdget(), which rejects an O_PATH mount descriptor.
-        self.mount_fd = os.open(self.filesystem, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
-        try:
-            self.device = os.fstat(self.mount_fd).st_dev
-            if self.writes_to_watched_filesystem():
-                raise ValueError("file provenance logs require a different filesystem from the watch target")
-            mount_id = fd_field(self.mount_fd, "mnt_id")
-            if not mount_id:
-                raise ValueError("the selected filesystem has no visible mount ID")
-            fd = checked(self.libc.fanotify_init(FAN_INIT, os.O_RDONLY | os.O_CLOEXEC), "fanotify_init")
-            try:
-                checked(self.libc.fanotify_mark(fd, FAN_MARK, EVENT_MASK, self.mount_fd, b"."), "fanotify_mark")
-                drop_setup_capabilities(self.libc)
-                poller = select.poll()
-                poller.register(fd, select.POLLIN)
-                next_check = time.monotonic()
-                yield [self.base_event("file.watch_started")]
-                while True:
-                    if time.monotonic() >= next_check:
-                        next_check = time.monotonic() + 2
-                        if not self.same_mount(mount_id):
-                            yield [self.gap("file_watch_target_changed")]
-                            raise ValueError("the watched mount changed")
-                        if self.writes_to_watched_filesystem():
-                            raise ValueError("file provenance logs moved onto the watched filesystem")
-                    notifications = poller.poll(500)
-                    if not notifications:
-                        continue
-                    if notifications[0][1] & (select.POLLERR | select.POLLHUP | select.POLLNVAL):
-                        yield [self.gap("fanotify_channel_error")]
-                        raise ValueError("the fanotify channel failed")
-                    batch = []
-                    try:
-                        # PIDFDs are installed during read, so consume the entire batch before yielding.
-                        data = os.read(fd, 64 * 1024)
-                        if not data:
-                            raise ValueError("fanotify returned an empty batch")
-                        for mask, pid, records in decode_events(data):
-                            batch.extend(self.materialize(mask, pid, records))
-                    except BlockingIOError:
-                        continue
-                    except (OSError, ValueError):
-                        yield [*batch, self.gap("fanotify_batch_error")]
-                        raise
-                    if batch:
-                        yield batch
-            finally:
-                os.close(fd)
-        finally:
-            os.close(self.mount_fd)
-            self.mount_fd = -1

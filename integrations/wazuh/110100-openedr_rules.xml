@@ -46,4 +46,18 @@
     <options>no_full_log</options>
     <group>openedr_sensor_health,</group>
   </rule>
+  <rule id="110107" level="3">
+    <if_sid>110100</if_sid>
+    <field name="openedr_event" type="pcre2">^executable\.open$</field>
+    <description>All OS OpenEDR observed a file opened for execution</description>
+    <options>no_full_log</options>
+    <group>openedr_executable,</group>
+  </rule>
+  <rule id="110108" level="8">
+    <if_sid>110107</if_sid>
+    <field name="openedr_executable_verdict" type="pcre2">^untrusted$</field>
+    <description>All OS OpenEDR observed an executable listed as untrusted in the local catalog</description>
+    <options>no_full_log</options>
+    <group>openedr_executable_verdict,</group>
+  </rule>
 </group>
