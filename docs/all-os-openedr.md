@@ -20,10 +20,10 @@ The service runs as a dynamic, unprivileged user without network access. It emit
 1. Add [the JSON localfile stanza](../integrations/wazuh/localfile.xml) to the Wazuh agent's existing `ossec_config`. Use an endpoint with an enrolled Wazuh agent and verify that the logcollector can read the protected file.
 2. Reserve Wazuh local rule IDs 110100 and 110101 and install [the rules](../integrations/wazuh/110100-openedr_rules.xml) under `/var/ossec/etc/rules/` on the manager. Test the [fixture](../integrations/wazuh/process-observed.json) with `/var/ossec/bin/wazuh-logtest`. It should match 110101 at level 3. Adjust collection and severity to the site's alert volume before rolling out broadly.
 3. Validate the Wazuh configuration and restart the services during the approved test window. Confirm a benign endpoint observation in the manager's `alerts.json`.
-4. Use Wazah's existing OpenSearch endpoint with an approved CA and a dedicated writer restricted to `openedr-alerts-v1-*`. Adapt [the Logstash example](../integrations/wazuh/openedr-opensearch.conf) on the host with access to the manager's alert stream. Use the Wazuh-documented server integration topology, inject credentials via the Logstash keystore, persist the position file, and create the index template and retention policy through the existing cluster owner. Validate the Logstash configuration before enabling forwarding.
-5. Query the integration index for the same `data.openedr_event_id` to verify network, authentication, mapping and ingestion. Use a separate read-only identity for the management API.
+4. In a Wazuh-managed indexer such as Wazah's deployment, first verify the existing Filebeat stream by finding the alert in `wazuh-alerts-4.x-*`. If the management API reads those shared indices, set its prefix to `wazuh-alerts-4.x` and grant a read-only role with document-level security scoped to the OpenEDR source.
+5. For a separate OpenSearch destination or dedicated indices, adapt [the Logstash example](../integrations/wazuh/openedr-opensearch.conf) on a host with manager alert stream access. Use an approved CA, a dedicated writer restricted to `openedr-alerts-v1-*`, the Logstash keystore, and a persistent position file. Have the cluster owner create the index template and retention policy. Validate the pipeline before enabling forwarding, then query the integration index for the same `data.openedr_event_id`.
 
-References for supported topology and syntax are the [Wazuh OpenSearch integration](https://documentation.wazuh.com/current/integrations-guide/opensearch/index.html) and [Wazuh rule testing](https://documentation.wazuh.com/current/user-manual/ruleset/testing.html). The checked-in sample is for the Linux preview's normalized schema. Windows upstream telemetry is a separate adapter task.
+References for supported topology and syntax are the [Wazuh OpenSearch integration](https://documentation.wazuh.com/current/integrations-guide/opensearch/index.html) and [Wazuh rule testing](https://documentation.wazuh.com/current/user-manual/ruleset/testing.html). The sample uses the Linux preview's normalized schema. The [upstream Windows guide](../getting-started/SettingFileBeat.md) describes log collection from `C:\ProgramData\edrsvc\log\*`. Capture representative logs on a licensed Windows test endpoint before implementing its normalization adapter.
 
 ## Kubernetes management preview
 
@@ -40,7 +40,9 @@ helm upgrade --install openedr ./deploy/chart --namespace openedr --create-names
 
 ## Plugin contract
 
-Agent plugins declare a name, API version, role and factory in the local registry. Collectors provide `poll()` and return normalized event dictionaries. Sinks implement `write(events)`. Select registered plugins with `--collector` and `--sink`. The initial registry provides the Linux process collector and JSON Lines sink. Register additional operator-reviewed factories in `all_os_openedr.agent.PLUGINS` and keep the schema compatible. Adding a general-purpose external plugin loader is tracked in the project.
+Agent plugins declare a name, API version, role and factory. Collectors provide `poll()` and return normalized event dictionaries. Sinks implement `write(events)`. Select the built-in plugins with `--collector linux-processes` and `--sink json-lines`.
+
+An operator can install a trusted Python distribution into the service's environment and select an entry point explicitly as `distribution:plugin-name`. Use the `all_os_openedr.plugins` entry point group and export a `Plugin` object from `all_os_openedr.plugins` with API version 1 and the role `collector` or `sink`. Plugins run in the agent process with its permissions. The agent loads only explicitly selected entry points.
 
 ## macOS
 

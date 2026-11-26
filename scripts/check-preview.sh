@@ -10,7 +10,23 @@ python3 -B - "$work/events.jsonl" <<'PY'
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 from xml.etree import ElementTree
+from all_os_openedr.plugins import API_VERSION, Plugin, Registry
+
+class InstalledPlugin:
+    def load(self):
+        return Plugin("sink", API_VERSION, lambda text: text.upper())
+
+with patch("all_os_openedr.plugins.distribution") as installed:
+    installed.return_value.entry_points.select.return_value = [InstalledPlugin()]
+    assert Registry({}).create("trusted-example:uppercase", "sink", text="event") == "EVENT"
+    try:
+        Registry({}).create("trusted-example:uppercase", "collector")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("The wrong plugin kind was accepted")
 
 events = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
 assert events and all(event["openedr_event"] == "process.observed" for event in events)

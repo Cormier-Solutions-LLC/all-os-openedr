@@ -26,6 +26,7 @@ jobs:
       (github.actor != 'cormierconsulting' || github.triggering_actor != 'cormierconsulting' ||
        github.event.pull_request.user.login != 'cormierconsulting' ||
        github.event.pull_request.head.repo.full_name != github.repository ||
+       github.event.pull_request.base.ref != 'main' ||
        !startsWith(github.event.pull_request.head.ref, 'codex/') &&
        !startsWith(github.event.pull_request.head.ref, 'release/'))
     runs-on: ubuntu-latest
@@ -45,6 +46,7 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.user.login == 'cormierconsulting' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.base.ref == 'main' &&
         (startsWith(github.event.pull_request.head.ref, 'codex/') ||
          startsWith(github.event.pull_request.head.ref, 'release/'))) ||
        ((github.event_name == 'schedule' || inputs.channel == 'nightly') && github.ref == 'refs/heads/main') ||

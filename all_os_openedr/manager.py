@@ -31,7 +31,7 @@ class Index:
                 or url.path not in ("", "/") or url.query or url.fragment):
             raise ValueError("OPENSEARCH_URL must be an HTTPS origin")
         prefix = os.environ.get("OPENSEARCH_INDEX_PREFIX", "openedr-alerts-v1")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,95}", prefix):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,95}", prefix):
             raise ValueError("Invalid OpenSearch index prefix")
         credentials = os.environ["OPENSEARCH_USERNAME"] + ":" + os.environ["OPENSEARCH_PASSWORD"]
         self.authorization = "Basic " + base64.b64encode(credentials.encode()).decode()
