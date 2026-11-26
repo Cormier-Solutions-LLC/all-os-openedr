@@ -188,6 +188,29 @@ ExecStart=/usr/bin/aa-exec --immediate --profile all-os-openedr-workload -- /usr
 
 Restart the service and verify a permitted launch, a denied launch, and graceful shutdown. The profile permits standard lifecycle signals from an unconfined service manager and permits normal signalling between processes in the same profile. Use a separate profile name for each workload. Stage updates outside `/etc/apparmor.d`, validate them with `apparmor_parser -Q -K`, and retain the last working profile outside that directory. To apply an update or roll it back, reload the chosen profile with `apparmor_parser -r -K PATH`, install the same file into its persistent location, and restart and retest the affected service. If loading or persistence fails, restore the last working profile in the kernel and on disk before restarting. The package leaves profile lifecycle under administrator control.
 
+### Automatically contain unknown managed applications
+
+Install `bubblewrap` and `python3-seccomp` on Debian 13 amd64. Configure a dedicated unprivileged service account and use the packaged launcher as the entry point for an administrator-managed service. Set its catalog path to the administrator-owned SHA-256 catalog described above. Each launch reads the current catalog, including when Wazuh is offline. An `untrusted` entry blocks the launch. A `trusted` entry permits native execution when the file and its ancestors are administrator-controlled. An unknown ELF or a trusted ELF from a writable location goes through the isolated launch path. An unavailable catalog or failed isolation blocks execution.
+
+Use a dedicated service cgroup to bound the resources of the application and its descendants. Create the root-owned log directory with `sudo install -d -m 0750 -o root -g root /var/log/all-os-openedr-containment`. Customize this example before installing and starting the unit. Stop the managed service before restoring a prior catalog or entry point.
+
+```ini
+[Service]
+Type=oneshot
+User=openedr-workload
+NoNewPrivileges=yes
+ProtectHome=yes
+TasksMax=64
+MemoryMax=256M
+CPUQuota=100%
+ExecStart=/usr/bin/all-os-openedr-launch --catalog /etc/all-os-openedr-executable-verdicts.json --timeout 30 /srv/openedr-workload/program
+StandardError=append:/var/log/all-os-openedr-containment/launches.jsonl
+```
+
+The launcher hashes and copies the opened file before handing its sealed bytes to Bubblewrap. The isolated process starts with private file, network, IPC, and PID namespaces and a bounded scratch directory. A syscall filter denies socket creation and cross-process memory operations. The read-only view includes the captured program and three Debian amd64 glibc runtime files for static and basic glibc-linked ELF programs. The launcher discards isolated process I/O and returns its exit status. The scope is headless ELF programs invoked through the configured entry point. Shell scripts, desktop sessions, direct execution outside the launcher, and applications requiring other libraries or host data need additional controls and qualification. [Bubblewrap execution options](https://manpages.debian.org/trixie/bubblewrap/bwrap.1.en.html)
+
+Review the local JSON decisions, including SHA-256, catalog ID, disposition, exit code for isolated launches, and the sandbox supervisor PID when available. On enrolled endpoints, merge `containment-localfile.xml` from `/usr/share/all-os-openedr/wazuh/` into the agent configuration. Install the updated `110100-openedr_rules.xml` on the manager. Reserve rule IDs 110120 through 110122. Configure log retention for the service's append file and restart the managed service after rotating it. Refresh the dedicated OpenSearch template to use typed containment fields for new indices.
+
 ### Protect local directories and mounted SMB shares
 
 Pass `--protect-tree DIR` to grant recursive reads and have AppArmor block and audit writes, appends, and hard links through the protected paths. Pass `--write-directory DIR` to allow creation, updates, and renames of files directly under a separate existing directory. The writable rule leaves subdirectories outside its scope. AppArmor matches canonical paths and applies the profile to the managed workload and its descendants. [Debian AppArmor policy syntax](https://manpages.debian.org/trixie/apparmor/apparmor.d.5.en.html)

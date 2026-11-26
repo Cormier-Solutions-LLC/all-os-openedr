@@ -50,7 +50,7 @@ def read_catalog(path):
     return hashlib.sha256(contents).hexdigest(), verdicts
 
 
-def inspect_descriptor(fd):
+def inspect_descriptor(fd, *, snapshot=None):
     status = "openedr_executable_measurement"
     if fd < 0:
         return {status: "descriptor_unavailable"}
@@ -78,6 +78,8 @@ def inspect_descriptor(fd):
             if len(prefix) < 4:
                 prefix = (prefix + block)[:4]
             digest.update(block)
+            if snapshot is not None:
+                snapshot.write(block)
             offset += len(block)
         if file_version(before) != file_version(os.fstat(fd)):
             return {**evidence, status: "changed"}

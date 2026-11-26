@@ -67,4 +67,25 @@
     <options>no_full_log</options>
     <group>openedr_execution_integrity,</group>
   </rule>
+  <rule id="110120" level="3">
+    <if_sid>110100</if_sid>
+    <field name="openedr_event" type="pcre2">^executable\.launch_decision$</field>
+    <description>All OS OpenEDR managed executable launch decision</description>
+    <options>no_full_log</options>
+    <group>openedr_containment,</group>
+  </rule>
+  <rule id="110121" level="8">
+    <if_sid>110120</if_sid>
+    <field name="openedr_containment_decision" type="pcre2">^blocked$</field>
+    <description>All OS OpenEDR blocked or stopped a managed executable launch</description>
+    <options>no_full_log</options>
+    <group>openedr_containment,</group>
+  </rule>
+  <rule id="110122" level="6">
+    <if_sid>110120</if_sid>
+    <field name="openedr_containment_decision" type="pcre2">^isolated$</field>
+    <description>All OS OpenEDR ran a managed executable inside containment</description>
+    <options>no_full_log</options>
+    <group>openedr_containment,</group>
+  </rule>
 </group>
