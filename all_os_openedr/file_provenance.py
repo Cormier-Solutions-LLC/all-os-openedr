@@ -261,11 +261,13 @@ class FileProvenance:
             "openedr_file_directory": bool(mask & ON_DIRECTORY),
             "openedr_file_mask": mask,
         }
+        parent = records.get(NEW_DFID_NAME) or records.get(DFID_NAME) or records.get(DFID)
         target = records.get(FID)
+        if target is None and parent is not None and parent.name == b".":
+            target = parent
         if target is not None:
             details["openedr_file_object_id"] = target.identity(self.boot_id, self.device)
             details["openedr_file_filesystem_id"] = target.filesystem.hex()
-        parent = records.get(NEW_DFID_NAME) or records.get(DFID_NAME) or records.get(DFID)
         if parent is not None:
             details.update(self.directory_entry(parent, "openedr_file"))
         old_parent = records.get(OLD_DFID_NAME)

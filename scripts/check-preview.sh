@@ -21,7 +21,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import executable, login_uid, render_rules
-from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, OVERFLOW, RENAME, decode_events
+from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.response import apply, decode_token
@@ -228,7 +228,7 @@ def file_record(kind, handle, name=None):
 
 def file_event(mask, *records):
     packed = b"".join(records)
-    return METADATA.pack(METADATA.size + len(packed), 3, 0, METADATA.size, mask, -1, 2000) + packed
+    return METADATA.pack(METADATA.size + len(packed), 3, 0, METADATA.size, mask, -1, 0) + packed
 
 rename = file_event(RENAME, file_record(NEW_DFID_NAME, b"parentB", b"after"),
                     file_record(OLD_DFID_NAME, b"parentA", b"before"), file_record(FID, b"object"))
@@ -239,6 +239,13 @@ before, after = decoded[0][2], decoded[1][2]
 assert before[FID].identity("boot", 1) == after[FID].identity("boot", 1)
 assert before[FID].identity("boot", 1) != after[FID].identity("boot", 2)
 assert after[OLD_DFID_NAME].name == b"before" and after[NEW_DFID_NAME].name == b"after"
+directory = next(decode_events(file_event(ON_DIRECTORY | 0x20, file_record(DFID_NAME, b"object", b"."))))
+provenance = FileProvenance("/", "/tmp/preview-file-provenance.jsonl")
+provenance.device = 1
+with patch.object(provenance, "resolve_path", return_value=b"/folder"):
+    observation, = provenance.materialize(*directory)
+assert observation["openedr_file_object_id"] == before[FID].identity(provenance.boot_id, 1)
+assert observation["openedr_file_path"] == "/folder" and "openedr_file_parent_id" not in observation
 try:
     list(decode_events(rename[:-1]))
 except ValueError:
