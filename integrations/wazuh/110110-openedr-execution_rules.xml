@@ -37,4 +37,10 @@
     <description>OpenEDR observed write access or an attribute change on monitored configuration</description>
     <group>openedr_configuration_change,</group>
   </rule>
+  <rule id="110119" level="8">
+    <if_sid>80700</if_sid>
+    <match type="pcre2">^(?:node=\S+ )?type=INTEGRITY_DATA msg=audit\([0-9]+\.[0-9]+:[0-9]+\):\s+pid=[0-9]+ uid=[0-9]+ auid=[0-9]+ ses=[0-9]+(?:(?!\s+type=)[^\x1d])*?\sop=appraise_data\scause=\S+(?:(?!\s+type=)[^\x1d])*?\sres=0\serrno=-?[0-9]+(?:[\s\x1d]|$)</match>
+    <description>Linux IMA appraisal failure</description>
+    <group>openedr_execution_integrity,</group>
+  </rule>
 </group>

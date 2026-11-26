@@ -115,6 +115,30 @@ These rules report successful write access and attribute-changing operations. A 
 
 Reuse the Audit localfile stanza above. Reserve rule ID `110118` and update the manager's `110110-openedr-execution_rules.xml` before generating a benign change. Search the Wazuh alerts for `rule.id:110118`. The alert preserves the grouped Audit record, including additional paths on operations such as rename. Use the alert's executable, PID, user fields, and full Audit record to investigate. File contents are outside the alert. Roll back by removing `41-openedr-configuration.rules` and deleting only those rules with `sudo auditctl -D -k openedr-config-change`. Confirm `auditctl -l -k openedr-config-change` no longer lists the configuration watches. If the endpoint uses immutable Audit rules, schedule a reboot for the change to take effect.
 
+### Kernel execution approval on a managed volume
+
+On Debian 13, Linux Integrity Measurement Architecture (IMA) can require an approved hash before direct execution or executable file mapping from a dedicated ext4 filesystem. The rules follow that filesystem's UUID. Use a separate volume for managed executable files. Keep the system root and operator tools on their existing filesystems. IMA enforces the policy in the kernel, including while Wazuh is unavailable. [Linux IMA policy](https://ima-doc.readthedocs.io/en/latest/ima-policy.html)
+
+Mount the volume and prepare a root-owned verdict catalog using the schema in [Identify files opened for execution](#identify-files-opened-for-execution). Add `trusted` entries only for independently verified files. Approve the executable after placing its final bytes on the volume. The command checks the exact file against the catalog and records its SHA-256 in the kernel's `security.ima` attribute. Approval and revocation apply to that file object, including any hard links to it.
+
+```sh
+sudo all-os-openedr-ima approve --filesystem /srv/openedr-exec \
+    --catalog /etc/all-os-openedr-executable-verdicts.json /srv/openedr-exec/approved-program
+sudo all-os-openedr-ima policy --filesystem /srv/openedr-exec > openedr-ima-policy
+cat openedr-ima-policy
+```
+
+On a host with a fresh IMA configuration and appraisal in enforce mode, stage and load the reviewed policy from a root-owned path outside the protected volume. On the standard Debian 13 kernel, loading a custom policy uses the available policy update for the current boot. A custom policy replaces optional built-in rules. If the host already uses IMA, incorporate these rules into its complete policy through the site's approval process. A host in IMA log or fix mode needs an enforce-mode boot for this workflow. Test an approved and an unapproved executable before depending on the volume.
+
+```sh
+sudo install -o root -g root -m 0600 openedr-ima-policy /root/openedr-ima-policy
+printf '%s\n' /root/openedr-ima-policy | sudo tee /sys/kernel/security/ima/policy >/dev/null
+```
+
+To persist a tested custom policy on a fresh Debian host, have systemd load it at boot from `/etc/ima/ima-policy`. Retain the previous configuration. To roll back, restore the previous boot policy or remove the added file if there was no previous policy, then reboot. To withdraw one file's local approval, run `sudo all-os-openedr-ima revoke --filesystem /srv/openedr-exec /srv/openedr-exec/approved-program`. The next appraised operation uses the current file and approval. Approve copies that lack the attribute before execution. Code read as ordinary interpreter input is outside the direct execution and executable mapping hooks.
+
+Use the Audit input above and reserve rule ID `110119` on the Wazuh manager. The alert retains the IMA record, including the path, appraisal failure cause, process ID, and login UID. An alert reports appraisal failure. The kernel's configured appraisal mode determines whether the operation is denied. [Linux integrity audit record](https://github.com/torvalds/linux/blob/v6.12/security/integrity/integrity_audit.c)
+
 ### Pre-execution control for a managed workload
 
 On a Debian 13 endpoint with AppArmor enabled, start a systemd service through `aa-exec --immediate` under a dedicated unprivileged user. The kernel checks the service and its descendants against the loaded allowlist before each executable launch, including while the management backend is unavailable. Enforcement applies within the assigned service context. Profile creation and attachment are explicit administrator actions.
