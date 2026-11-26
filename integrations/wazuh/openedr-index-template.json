@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 8,
+  "version": 9,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -88,6 +88,7 @@
             "openedr_uid": {"type": "long"},
             "openedr_containment_decision": {"type": "keyword"},
             "openedr_containment_reason": {"type": "keyword"},
+            "openedr_containment_interpreter": {"type": "keyword"},
             "openedr_containment_exit_code": {"type": "integer"},
             "openedr_containment_pid": {"type": "long"},
             "openedr_ima_uid": {"type": "long"},

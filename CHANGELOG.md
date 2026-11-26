@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Run supported POSIX shell and Bash scripts in the managed Debian sandbox, with interpreter evidence in the launch record.
 - Bind managed launches to an enrolled ext4 volume by UUID and require the kernel IMA approval attribute before permitting native execution from that volume.
 - Run unknown executables inside an isolated environment when a managed Debian 13 service uses the local verdict launcher. Route launch decisions to Wazuh.
 - Add kernel IMA execution approval for a dedicated Debian ext4 volume, with local SHA-256 approval and Wazuh appraisal failure alerts.

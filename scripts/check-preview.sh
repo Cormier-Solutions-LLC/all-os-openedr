@@ -27,7 +27,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
-from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status
+from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status, script_shell
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
@@ -432,6 +432,23 @@ assert namespace_status(BytesIO(status), 42) == 456
 assert namespace_status(BytesIO(status), 0) is None
 assert namespace_status(BytesIO(status.splitlines()[0]), 42) is None
 assert namespace_status(BytesIO(b'[]\n{"exit-code":42}\n'), 42) is None
+for header, expected in (
+    (b"#!/bin/sh\n", ("dash", ())),
+    (b"#!\t/usr/bin/dash -eu\n", ("dash", ("-eu",))),
+    (b"#!/usr/bin/bash -e\n", ("bash", ("-e",))),
+    (b"#!/usr/bin/env sh\n", ("dash", ())),
+    (b"#!/usr/bin/env -S bash -ue\n", ("bash", ("-ue",))),
+    (b"#!/usr/bin/env bash -e\n", None),
+    (b"#!/bin/bash -c\n", None),
+    (b"#!/bin/bash\r\n", None),
+    (b"#!/bin/sh\x00\n", None),
+    (b"#!/usr/bin/python3\n", None),
+    (b"#!/bin/sh" + b" " * 250 + b"\n", None),
+    (b"#!/bin/sh", None),
+):
+    snapshot = BytesIO(header)
+    snapshot.seek(0, 2)
+    assert script_shell(snapshot) == expected, header
 containment = ElementTree.parse(integration / "containment-localfile.xml")
 assert containment.findtext("location") == "/var/log/all-os-openedr-containment/launches.jsonl"
 assert containment.findtext("log_format") == "json"
@@ -479,6 +496,7 @@ for key, field_type in (
     ("openedr_ima_cause", "keyword"),
     ("openedr_containment_decision", "keyword"),
     ("openedr_containment_reason", "keyword"),
+    ("openedr_containment_interpreter", "keyword"),
     ("openedr_containment_exit_code", "integer"),
     ("openedr_containment_pid", "long"),
 ):

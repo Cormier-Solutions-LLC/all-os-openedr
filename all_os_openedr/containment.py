@@ -1,4 +1,4 @@
-"""Apply the local verdict before a managed Debian ELF launch."""
+"""Apply the local verdict before launching a managed Debian program."""
 
 import argparse
 import errno
@@ -29,6 +29,16 @@ GLIBC_AMD64 = (
     ("/usr/lib/x86_64-linux-gnu/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6"),
     ("/usr/lib/x86_64-linux-gnu/libm.so.6", "/lib/x86_64-linux-gnu/libm.so.6"),
 )
+SHELL_PATHS = {
+    b"/bin/sh": "dash",
+    b"/usr/bin/sh": "dash",
+    b"/bin/dash": "dash",
+    b"/usr/bin/dash": "dash",
+    b"/bin/bash": "bash",
+    b"/usr/bin/bash": "bash",
+}
+SHELL_NAMES = {b"sh": "dash", b"dash": "dash", b"bash": "bash"}
+SHELL_OPTIONS = (b"-e", b"-u", b"-eu", b"-ue")
 
 
 def write_filter(target):
@@ -59,7 +69,33 @@ def namespace_status(status, code):
     return None
 
 
-def sandbox(snapshot, arguments, timeout):
+def script_shell(snapshot):
+    snapshot.seek(0)
+    line = snapshot.readline(256)
+    if not line.startswith(b"#!") or not line.endswith(b"\n") or any(
+        value < 32 and value not in (9, 10) for value in line
+    ):
+        return None
+    fields = line[2:-1].split()
+    if not fields:
+        return None
+    interpreter, *options = fields
+    if interpreter in (b"/usr/bin/env", b"/bin/env"):
+        if len(options) >= 2 and options[0] == b"-S":
+            interpreter, *options = options[1:]
+        elif len(options) == 1:
+            interpreter, options = options[0], []
+        else:
+            return None
+        shell = SHELL_NAMES.get(interpreter)
+    else:
+        shell = SHELL_PATHS.get(interpreter)
+    if shell is None or len(options) > 1 or any(option not in SHELL_OPTIONS for option in options):
+        return None
+    return shell, tuple(option.decode("ascii") for option in options)
+
+
+def sandbox(snapshot, arguments, timeout, script=None):
     snapshot.flush()
     snapshot.seek(0)
     fd = snapshot.fileno()
@@ -74,21 +110,38 @@ def sandbox(snapshot, arguments, timeout):
         except ImportError:
             return LAUNCH_FAILED, "sandbox_filter_unavailable", None
         filter_fd = filter_file.fileno()
-        libraries = []
-        if platform.machine() == "x86_64":
-            for source, destination in GLIBC_AMD64:
-                library = Path(source)
-                trusted_file(library)
-                if not library.is_file():
-                    raise ValueError("The sandbox requires a regular glibc runtime file")
-                libraries.extend(("--ro-bind", source, destination))
+        runtime = GLIBC_AMD64 if platform.machine() == "x86_64" else ()
+        shell_setup = []
+        permissions = "0555"
+        entrypoint = [PROGRAM]
+        if script is not None:
+            shell, options = script
+            permissions = "0444"
+            runtime += (("/usr/bin/dash", "/bin/dash"),)
+            shell_setup = ["--setenv", "PATH", "/bin", "--symlink", "dash", "/bin/sh"]
+            startup = []
+            if shell == "bash":
+                runtime += (
+                    ("/usr/bin/bash", "/bin/bash"),
+                    ("/usr/lib/x86_64-linux-gnu/libtinfo.so.6", "/lib/x86_64-linux-gnu/libtinfo.so.6"),
+                )
+                startup = ["--noprofile", "--norc"]
+            entrypoint = [f"/bin/{shell}", *startup, *options, "--", PROGRAM]
+        bindings = []
+        for source, destination in runtime:
+            path = Path(source)
+            trusted_file(path)
+            if not path.is_file():
+                raise ValueError("The sandbox requires a regular runtime file")
+            bindings.extend(("--ro-bind", source, destination))
         command = [
             BUBBLEWRAP, "--unshare-user", "--disable-userns", "--unshare-pid", "--unshare-net",
             "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--new-session", "--die-with-parent",
             "--cap-drop", "ALL", "--clearenv", "--setenv", "HOME", "/tmp", "--chdir", "/tmp",
             "--size", "67108864", "--perms", "01777", "--tmpfs", "/tmp", "--dev", "/dev",
-            "--perms", "0555", "--ro-bind-data", str(fd), PROGRAM, *libraries, "--remount-ro", "/",
-            "--seccomp", str(filter_fd), "--json-status-fd", str(status_fd), "--", PROGRAM, *arguments,
+            "--perms", permissions, "--ro-bind-data", str(fd), PROGRAM, *bindings, *shell_setup,
+            "--remount-ro", "/", "--seccomp", str(filter_fd), "--json-status-fd", str(status_fd),
+            "--", *entrypoint, *arguments,
         ]
         try:
             result = subprocess.run(
@@ -171,22 +224,33 @@ def launch(options, event):
             emit(event, "blocked", "execution_volume_mismatch")
             return LAUNCH_FAILED
         if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
-                or not os.access(path, os.X_OK) or os.fstatvfs(fd).f_flag & os.ST_NOEXEC):
+                or os.fstatvfs(fd).f_flag & os.ST_NOEXEC):
             emit(event, "blocked", "file_not_executable")
             return LAUNCH_FAILED
         copy_fd = os.memfd_create("openedr-program", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
         with os.fdopen(copy_fd, "w+b") as snapshot:
             event.update(inspect_descriptor(fd, snapshot=snapshot))
             digest = event.get("openedr_executable_sha256")
-            if digest is None or event.get("openedr_executable_format") != "elf":
+            kind = event.get("openedr_executable_format")
+            if digest is None or kind not in ("elf", "script"):
                 emit(event, "blocked", "unsupported_program")
+                return LAUNCH_FAILED
+            if kind == "elf" and not os.access(path, os.X_OK):
+                emit(event, "blocked", "file_not_executable")
                 return LAUNCH_FAILED
             verdict = verdicts.get(digest, "unknown")
             event["openedr_executable_verdict"] = verdict
             if verdict == "untrusted":
                 emit(event, "blocked", "catalog_denied")
                 return LAUNCH_FAILED
-            if (verdict == "trusted" and trusted_location(path, metadata)
+            script = None
+            if kind == "script":
+                script = script_shell(snapshot) if platform.machine() == "x86_64" else None
+                if script is None:
+                    emit(event, "blocked", "unsupported_interpreter")
+                    return LAUNCH_FAILED
+                event["openedr_containment_interpreter"] = script[0]
+            if (script is None and verdict == "trusted" and trusted_location(path, metadata)
                     and file_version(metadata) == file_version(os.fstat(fd))):
                 if volume_device is not None and not has_volume_approval(fd, digest):
                     emit(event, "blocked", "ima_approval_missing")
@@ -197,11 +261,15 @@ def launch(options, event):
                 except OSError:
                     emit({**event, "openedr_event_id": uuid.uuid4().hex}, "blocked", "native_exec_failed")
                     return LAUNCH_FAILED
-            exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout)
+            exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script)
             details = {"openedr_containment_exit_code": exit_code}
             if pid is not None:
                 details["openedr_containment_pid"] = pid
-                emit(event, "isolated", "catalog_unknown" if verdict == "unknown" else "unmanaged_location", **details)
+                if verdict == "unknown":
+                    reason = "catalog_unknown"
+                else:
+                    reason = "script_requires_isolation" if script is not None else "unmanaged_location"
+                emit(event, "isolated", reason, **details)
             else:
                 emit(event, "blocked", outcome, **details)
             return exit_code
