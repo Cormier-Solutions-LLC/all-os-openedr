@@ -34,7 +34,7 @@ sudo auditctl -s
 
 Replace the example path and login UID with your policy values. The command only prints rules, so review them before installation. Audit uses the first matching rule. Reconcile these rules with your existing audit configuration, including any earlier suppress rules, broad execution rules, or immutable policy. If the protected executable is replaced or moved, verify the watches against the new executable. To also collect successful executions from logged-in accounts at or above a given UID, pass `--observe-login-execs-from UID`. That option can generate substantial event volume. Monitor the Audit `lost` counter. Audit can record command-line arguments, so restrict access and set retention for both Audit logs and Wazuh data.
 
-On the enrolled endpoint, merge the packaged `/usr/share/all-os-openedr/wazuh/audit-localfile.xml` into the Wazuh agent configuration if the agent does not already collect `/var/log/audit/audit.log` with the `audit` format. On the manager, install the packaged `110110-openedr-execution_rules.xml` in its local rules directory, confirm rule IDs 110110 through 110112 are available, and validate the manager configuration. Restart the agent and manager after changing their respective configurations. An unexpected login UID launching the protected executable raises rule 110110. Optional session execution events use rule 110111. A denied execution from an OpenEDR AppArmor profile raises rule 110112 with the original audit record as evidence.
+On the enrolled endpoint, merge the packaged `/usr/share/all-os-openedr/wazuh/audit-localfile.xml` into the Wazuh agent configuration if the agent does not already collect `/var/log/audit/audit.log` with the `audit` format. On the manager, install the packaged `110110-openedr-execution_rules.xml` in its local rules directory, confirm rule IDs 110110 through 110113 are available, and validate the manager configuration. Restart the agent and manager after changing their respective configurations. An unexpected login UID launching the protected executable raises rule 110110. Optional session execution events use rule 110111. AppArmor execution denials raise rule 110112. Denied file mutations under an OpenEDR AppArmor profile raise rule 110113. Both AppArmor rules retain the original audit record as evidence.
 
 ### Pre-execution control for a managed workload
 
@@ -72,6 +72,27 @@ ExecStart=/usr/bin/aa-exec --immediate --profile all-os-openedr-workload -- /usr
 ```
 
 Restart the service and verify a permitted launch, a denied launch, and graceful shutdown. The profile permits standard lifecycle signals from an unconfined service manager and permits normal signalling between processes in the same profile. Use a separate profile name for each workload. Stage updates outside `/etc/apparmor.d`, validate them with `apparmor_parser -Q -K`, and retain the last working profile outside that directory. To apply an update or roll it back, reload the chosen profile with `apparmor_parser -r -K PATH`, install the same file into its persistent location, and restart and retest the affected service. If loading or persistence fails, restore the last working profile in the kernel and on disk before restarting. The package leaves profile lifecycle under administrator control.
+
+### Protect local directories and mounted SMB shares
+
+Pass `--protect-tree DIR` to grant recursive reads and have AppArmor block and audit writes, appends, and hard links through the protected paths. Pass `--write-directory DIR` to allow creation, updates, and renames of files directly under a separate existing directory. The writable rule leaves subdirectories outside its scope. AppArmor matches canonical paths and applies the profile to the managed workload and its descendants. [Debian AppArmor policy syntax](https://manpages.debian.org/trixie/apparmor/apparmor.d.5.en.html)
+
+Add these arguments to the profile generation command for a workload that reads an archive and writes an outbox on the same mounted share.
+
+```sh
+    --protect-tree /srv/smb/archive \
+    --write-directory /srv/smb/outbox
+```
+
+In the systemd drop-in, require the share before starting the workload.
+
+```ini
+[Unit]
+RequiresMountsFor=/srv/smb
+AssertPathIsMountPoint=/srv/smb
+```
+
+Keep writable directories and files distinct from protected data at the storage layer. Check for alternate exports, bind mounts, and hard links that expose the same data through write-approved paths. Enforce server-side access controls for clients and processes outside the OpenEDR profile. Verify the workload's allowed outputs and blocked mutations against a disposable share before applying the policy to live data.
 
 The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 
