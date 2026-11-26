@@ -17,6 +17,7 @@ from pathlib import Path
 from .apparmor_policy import trusted_file
 from .executable import file_version, inspect_descriptor, read_catalog
 from .file_provenance import visible_text
+from .ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, select_filesystem
 
 
 BUBBLEWRAP = "/usr/bin/bwrap"
@@ -117,6 +118,14 @@ def trusted_location(path, metadata):
     )
 
 
+def has_volume_approval(fd, digest):
+    try:
+        approval = os.getxattr(fd, IMA_ATTRIBUTE)
+    except OSError:
+        return False
+    return approval == IMA_SHA256_PREFIX + bytes.fromhex(digest)
+
+
 def emit(event, decision, reason, **details):
     print(json.dumps({
         **event,
@@ -127,6 +136,19 @@ def emit(event, decision, reason, **details):
 
 
 def launch(options, event):
+    volume_device = None
+    if options.execution_volume is not None:
+        mount, expected = options.execution_volume
+        event["openedr_executable_volume_uuid"] = expected
+        try:
+            root, device, identity = select_filesystem(mount)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            emit(event, "blocked", "execution_volume_unavailable")
+            return LAUNCH_FAILED
+        if str(identity) != expected:
+            emit(event, "blocked", "execution_volume_mismatch")
+            return LAUNCH_FAILED
+        volume_device = device
     try:
         catalog = Path(options.catalog).resolve(strict=True)
         trusted_file(catalog)
@@ -138,10 +160,16 @@ def launch(options, event):
         return LAUNCH_FAILED
     event["openedr_executable_catalog_sha256"] = catalog_id
     path = Path(options.program).resolve(strict=True)
+    if volume_device is not None and not path.is_relative_to(root):
+        emit(event, "blocked", "execution_volume_mismatch")
+        return LAUNCH_FAILED
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     with os.fdopen(os.open(path, flags), "rb") as source:
         fd = source.fileno()
         metadata = os.fstat(fd)
+        if volume_device is not None and metadata.st_dev != volume_device:
+            emit(event, "blocked", "execution_volume_mismatch")
+            return LAUNCH_FAILED
         if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
                 or not os.access(path, os.X_OK) or os.fstatvfs(fd).f_flag & os.ST_NOEXEC):
             emit(event, "blocked", "file_not_executable")
@@ -160,6 +188,9 @@ def launch(options, event):
                 return LAUNCH_FAILED
             if (verdict == "trusted" and trusted_location(path, metadata)
                     and file_version(metadata) == file_version(os.fstat(fd))):
+                if volume_device is not None and not has_volume_approval(fd, digest):
+                    emit(event, "blocked", "ima_approval_missing")
+                    return LAUNCH_FAILED
                 emit(event, "approved", "catalog_trusted")
                 try:
                     os.execve(fd, [str(path), *options.arguments], os.environ)
@@ -179,6 +210,8 @@ def launch(options, event):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", required=True, help="administrator-owned SHA-256 verdict catalog")
+    parser.add_argument("--execution-volume", nargs=2, metavar=("MOUNT", "UUID"),
+                        help="bind launches to a dedicated ext4 execution volume and require IMA approval for native execution")
     parser.add_argument("--timeout", type=int, metavar="SECONDS", default=30)
     parser.add_argument("program", type=Path)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
@@ -187,6 +220,14 @@ def main():
         parser.error("Run under a dedicated unprivileged account")
     if not options.program.is_absolute() or not Path(options.catalog).is_absolute():
         parser.error("Use absolute paths for the program and catalog")
+    if options.execution_volume is not None:
+        mount, identity = options.execution_volume
+        if not Path(mount).is_absolute():
+            parser.error("Use an absolute mount path for the execution volume")
+        try:
+            options.execution_volume = mount, str(uuid.UUID(identity))
+        except ValueError:
+            parser.error("Supply the execution volume's filesystem UUID")
     if not 1 <= options.timeout <= 300:
         parser.error("Use a timeout between 1 and 300 seconds")
     event = {

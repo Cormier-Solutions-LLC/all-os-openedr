@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Bind managed launches to an enrolled ext4 volume by UUID and require the kernel IMA approval attribute before permitting native execution from that volume.
 - Run unknown executables inside an isolated environment when a managed Debian 13 service uses the local verdict launcher. Route launch decisions to Wazuh.
 - Add kernel IMA execution approval for a dedicated Debian ext4 volume, with local SHA-256 approval and Wazuh appraisal failure alerts.
 - Add opt-in Debian executable evidence from kernel event descriptors, with SHA-256, offline catalog verdicts, and Wazuh alerts for untrusted matches.

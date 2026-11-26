@@ -27,7 +27,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
-from all_os_openedr.containment import namespace_status
+from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
@@ -75,12 +75,29 @@ with TemporaryDirectory() as temporary:
         pass
     else:
         raise AssertionError("IMA accepted the root filesystem")
+    configured = SimpleNamespace(execution_volume=(temporary, str(execution_uuid)))
+    event = {}
+    with patch("all_os_openedr.containment.select_filesystem", side_effect=OSError), \
+         patch("all_os_openedr.containment.emit") as decision:
+        assert launch(configured, event) == LAUNCH_FAILED
+        decision.assert_called_once_with(event, "blocked", "execution_volume_unavailable")
+        assert event["openedr_executable_volume_uuid"] == str(execution_uuid)
+    with patch("all_os_openedr.containment.select_filesystem",
+               return_value=(Path(temporary), 1, uuid.UUID(int=1))), \
+         patch("all_os_openedr.containment.emit") as decision:
+        assert launch(configured, event) == LAUNCH_FAILED
+        decision.assert_called_once_with(event, "blocked", "execution_volume_mismatch")
     candidate.write_bytes(content)
     with candidate.open("rb") as opened:
         fd = opened.fileno()
         with patch("all_os_openedr.ima_policy.os.setxattr") as set_label:
             assert ima_approve(fd, os.fstat(fd), {digest: "trusted"}) == digest
             set_label.assert_called_once_with(fd, IMA_ATTRIBUTE, IMA_SHA256_PREFIX + bytes.fromhex(digest), os.XATTR_CREATE)
+        with patch("all_os_openedr.containment.os.getxattr", return_value=IMA_SHA256_PREFIX + bytes.fromhex(digest)):
+            assert has_volume_approval(fd, digest)
+            assert not has_volume_approval(fd, "0" * 64)
+        with patch("all_os_openedr.containment.os.getxattr", side_effect=OSError(errno.ENODATA, "absent")):
+            assert not has_volume_approval(fd, digest)
         opened.seek(0)
         with patch("all_os_openedr.ima_policy.os.setxattr") as set_label:
             try:
@@ -457,6 +474,7 @@ for key, field_type in (
     ("openedr_executable_sha256", "keyword"),
     ("openedr_executable_verdict", "keyword"),
     ("openedr_executable_size", "long"),
+    ("openedr_executable_volume_uuid", "keyword"),
     ("openedr_ima_auid", "long"),
     ("openedr_ima_cause", "keyword"),
     ("openedr_containment_decision", "keyword"),
