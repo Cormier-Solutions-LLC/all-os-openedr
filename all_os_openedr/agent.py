@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .plugins import API_VERSION, Plugin, Registry
+from .proc_connector import LinuxProcConnector
 
 
 class LinuxProcesses:
@@ -73,6 +74,7 @@ class JsonLines:
 
 PLUGINS = Registry({
     "linux-processes": Plugin("collector", API_VERSION, LinuxProcesses),
+    "linux-proc-connector": Plugin("collector", API_VERSION, LinuxProcConnector),
     "json-lines": Plugin("sink", API_VERSION, JsonLines),
 })
 
@@ -93,6 +95,13 @@ def main():
     try:
         collector = PLUGINS.create(options.collector, "collector")
         sink = PLUGINS.create(options.sink, "sink", output=options.output)
+        stream = getattr(collector, "stream", None)
+        if callable(stream):
+            if options.once:
+                parser.error("--once requires a sampling collector")
+            for batch in stream():
+                sink.write(batch)
+            return 0
         while True:
             sink.write(collector.poll())
             if options.once:

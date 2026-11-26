@@ -9,6 +9,7 @@ python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
 import json
 import re
+import struct
 import sys
 from argparse import ArgumentTypeError
 from pathlib import Path
@@ -20,6 +21,7 @@ from xml.etree import ElementTree
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import executable, login_uid, render_rules
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
+from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
 with TemporaryDirectory() as temporary:
@@ -128,6 +130,58 @@ with TemporaryDirectory() as temporary:
     else:
         raise AssertionError("Accepted the same group for readers and writers")
 
+def kernel_event(kind, cpu, sequence, stamp, payload):
+    event = PROC.pack(kind, cpu, stamp) + payload
+    body = CONNECTOR.pack(1, 1, sequence, 0, len(event), 0) + event
+    return NETLINK.pack(NETLINK.size + len(body), 3, 0, sequence, 0) + body
+
+
+tracker = Lifecycle("boot", "host")
+
+
+def ingest(kind, sequence, stamp, payload, cpu=0):
+    record, = proc_records(kernel_event(kind, cpu, sequence, stamp, payload))
+    return list(tracker.accept(record))
+
+
+fork_parent, = ingest(FORK, 0xfffffffe, 100, struct.pack("=iiii", 1, 1, 200, 200))
+fork_child, = ingest(FORK, 0xffffffff, 200, struct.pack("=iiii", 200, 200, 201, 201))
+assert fork_child["openedr_parent_process_id"] == fork_parent["openedr_process_id"]
+assert ingest(4, 0, 210, b"") == []  # Other connector events count toward continuity.
+exec_child, = ingest(EXEC, 1, 250, struct.pack("=ii", 201, 201))
+assert exec_child["openedr_process_id"] == fork_child["openedr_process_id"]
+exit_child, = ingest(EXIT, 5, 300, struct.pack("=iiIIii", 201, 201, 9, 17, 200, 200), cpu=1)
+assert exit_child["openedr_wait_status"] == 9
+assert exit_child["openedr_process_id"] == fork_child["openedr_process_id"]
+assert exit_child["openedr_parent_process_id"] == fork_parent["openedr_process_id"]
+reused, = ingest(FORK, 2, 400, struct.pack("=iiii", 200, 200, 201, 201))
+assert reused["openedr_process_id"] != fork_child["openedr_process_id"]
+gap, uncorrelated = ingest(EXEC, 4, 420, struct.pack("=ii", 201, 201))
+assert gap["openedr_event"] == "process.stream_gap" and gap["openedr_missing_events"] == 1
+assert "openedr_process_id" not in uncorrelated
+threaded, = ingest(FORK, 5, 430, struct.pack("=iiii", 1, 1, 300, 300))
+thread, = ingest(FORK, 6, 440, struct.pack("=iiii", 1, 1, 301, 300))
+leader_exit, = ingest(EXIT, 7, 450, struct.pack("=iiIIii", 300, 300, 0, 17, 1, 1))
+worker_child, = ingest(FORK, 8, 460, struct.pack("=iiii", 301, 300, 302, 302))
+worker_exit, = ingest(EXIT, 9, 470, struct.pack("=iiIIii", 301, 300, 0, 17, 1, 1))
+assert thread["openedr_process_id"] == threaded["openedr_process_id"]
+assert leader_exit["openedr_thread_group_leader"] and not worker_exit["openedr_thread_group_leader"]
+assert worker_child["openedr_parent_process_id"] == threaded["openedr_process_id"]
+assert worker_exit["openedr_process_id"] == threaded["openedr_process_id"]
+assert 300 not in tracker.processes
+old_exit, = ingest(EXIT, 6, 100, struct.pack("=iiIIii", 302, 302, 0, 17, 0, 0), cpu=1)
+old_parent, = ingest(EXIT, 7, 110, struct.pack("=iiIIii", 400, 400, 0, 17, 302, 302), cpu=1)
+assert "openedr_parent_process_id" not in old_parent
+assert "openedr_process_id" not in old_exit
+assert 302 in tracker.processes
+try:
+    list(proc_records(kernel_event(EXEC, 0, 10, 480, struct.pack("=ii", 201, 201))[:-1]))
+except StreamGap:
+    pass
+else:
+    raise AssertionError("Accepted a partial netlink frame")
+
+
 class InstalledPlugin:
     def load(self):
         return Plugin("sink", API_VERSION, lambda text: text.upper())
@@ -150,6 +204,12 @@ assert set(events[0]) == set(fixture)
 assert ElementTree.parse("integrations/wazuh/localfile.xml").findtext("log_format") == "json"
 assert ElementTree.parse("integrations/wazuh/110100-openedr_rules.xml").find("rule[@id='110101']") is not None
 integration = Path("integrations/wazuh")
+lifecycle_feed = ElementTree.parse(integration / "lifecycle-localfile.xml")
+assert lifecycle_feed.findtext("location") == "/var/log/all-os-openedr-lifecycle/events.jsonl"
+assert lifecycle_feed.findtext("log_format") == "json"
+lifecycle_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
+assert lifecycle_rules.find("rule[@id='110102']") is not None
+assert lifecycle_rules.find("rule[@id='110103']") is not None
 audit_feed = ElementTree.parse(integration / "audit-localfile.xml")
 assert audit_feed.findtext("location") == "/var/log/audit/audit.log"
 assert audit_feed.findtext("log_format") == "audit"
@@ -190,6 +250,18 @@ dedicated_indices = ["openedr-alerts-v1-*"]
 template = json.loads((integration / "openedr-index-template.json").read_text())
 assert template["index_patterns"] == dedicated_indices
 assert template["template"]["mappings"]["dynamic"] is False
+assert template["version"] >= 2
+fields = template["template"]["mappings"]["properties"]["data"]["properties"]
+for key, field_type in (
+    ("openedr_process_id", "keyword"),
+    ("openedr_parent_process_id", "keyword"),
+    ("openedr_stream_id", "keyword"),
+    ("openedr_kernel_monotonic_ns", "long"),
+    ("openedr_wait_status", "long"),
+    ("openedr_thread_group_leader", "boolean"),
+    ("openedr_missing_events", "long"),
+):
+    assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
     policy = json.loads((integration / f"openedr-{role}-role.json").read_text())
     assert [permission["index_patterns"] for permission in policy["index_permissions"]] == [dedicated_indices]
@@ -209,10 +281,13 @@ dpkg-deb --extract "$package" "$work/package"
 cmp NOTICE.md "$work/package/usr/share/doc/all-os-openedr/NOTICE.md"
 cmp LICENSE.md "$work/package/usr/share/doc/all-os-openedr/copyright"
 test -f "$work/package/usr/lib/systemd/system/all-os-openedr.service"
+cmp packaging/debian/all-os-openedr-lifecycle.service \
+    "$work/package/usr/lib/systemd/system/all-os-openedr-lifecycle.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml \
+    lifecycle-localfile.xml 110100-openedr_rules.xml \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done

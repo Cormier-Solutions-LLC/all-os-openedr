@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Add an optional Linux process connector service that captures fork, exec, and task exit events, links observed parents, and reports detected stream gaps to Wazuh.
 - Add a Samba server policy for group-authorized writes from SMB clients, plus Wazuh rules for failed mutation requests.
 - Add managed-workload file protection for local directories and mounted SMB shares, with separate writable output directories and Wazuh alerts for blocked file changes.
 - Add opt-in AppArmor execution allowlists for Debian 13 managed workloads. The kernel enforces the allowlist offline, and Wazuh can alert when the workload is denied an executable.

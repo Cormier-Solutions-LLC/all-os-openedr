@@ -3,6 +3,6 @@ set -eu
 if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if [ -n "${2:-}" ]; then
-        deb-systemd-invoke try-restart all-os-openedr.service
+        deb-systemd-invoke try-restart all-os-openedr.service all-os-openedr-lifecycle.service
     fi
 fi
