@@ -54,6 +54,7 @@ with TemporaryDirectory() as temporary:
     data = policy_path(sys.argv[1])
     profile = render_profile(profile_name("workload"), [approved], [], [data], [])
     assert "profile all-os-openedr-workload {" in profile
+    assert "signal (receive) set=(hup, int, quit, abrt, kill, term, cont) peer=unconfined," in profile
     assert f'  "{approved}" rix,' in profile
     assert f'  "{data}" r,' in profile
     assert "*" not in profile and "ux" not in profile

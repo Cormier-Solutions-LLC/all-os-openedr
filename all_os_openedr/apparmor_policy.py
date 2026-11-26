@@ -43,7 +43,12 @@ def render_profile(name, executables, libraries, reads, writes):
         if any(path.samefile(code) for code in (*executables, *libraries)):
             raise ValueError(f"An approved code file cannot also be writable: {path}")
 
-    lines = ["abi <abi/4.0>,", "", f"profile {name} {{"]
+    lines = [
+        "abi <abi/4.0>,",
+        "",
+        f"profile {name} {{",
+        "  signal (receive) set=(hup, int, quit, abrt, kill, term, cont) peer=unconfined,",
+    ]
     for paths, permissions in (
         (executables, "rix"),
         (libraries, "mr"),
