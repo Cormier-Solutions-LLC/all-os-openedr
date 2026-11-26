@@ -14,6 +14,9 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 sh scripts/check-preview.sh
 sh packaging/debian/build.sh "$version" "$output"
+sh scripts/build-arch-container.sh --target artifacts --build-arg "RELEASE_VERSION=$version" \
+    --output "type=local,dest=$work/arch"
+install -m 0644 "$work/arch/all-os-openedr-$version-1-any.pkg.tar.zst" "$output/"
 git archive --format=tar.gz --prefix="all-os-openedr-${version}/" \
     --output="$output/all-os-openedr-preview-source-${version}.tar.gz" HEAD \
     LICENSE.md NOTICE.md README.md CHANGELOG.md VERSION .dockerignore all_os_openedr deploy integrations packaging scripts docs/all-os-openedr.md

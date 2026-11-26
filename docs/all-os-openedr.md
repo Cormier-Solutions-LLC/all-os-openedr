@@ -30,6 +30,21 @@ Build into an empty directory for each target so the install command selects one
 
 Rocky Linux 9 and 10 and Fedora 44 passed container build, install, upgrade, one-shot event generation, and removal checks. Run `scripts/check-rpm.sh` as root in a disposable target container to repeat those checks. Host systemd startup, SELinux enforcing behavior, Wazuh alert delivery, and the wider distribution matrix remain qualification items.
 
+## Arch Linux package
+
+Download the versioned `all-os-openedr-<version>-1-any.pkg.tar.zst` and corresponding `SHA256SUMS-<version>.txt` from [GitHub Releases](https://github.com/Cormier-Solutions-LLC/all-os-openedr/releases). In the download directory, set `version` to the download's full release version and verify the package before installing it.
+
+```sh
+version=0.5.0
+sha256sum --check --ignore-missing "SHA256SUMS-$version.txt"
+sudo pacman -U "./all-os-openedr-$version-1-any.pkg.tar.zst"
+sudo systemctl enable --now all-os-openedr.service
+```
+
+On a build host with `base-devel`, `python`, and `systemd` installed, run `sh packaging/arch/build.sh "$(cat VERSION)" ./dist` as a regular user. The nightly filename contains the complete release identifier. Pacman uses a normalized metadata version so that the corresponding stable release sorts after it.
+
+Run `sudo systemctl restart all-os-openedr.service` after an upgrade to load the new code. `sudo pacman -R all-os-openedr` stops the service and clears its enablement while retaining the event log. The package installs `LICENSE.md` and `NOTICE.md` under `/usr/share/licenses/all-os-openedr/`.
+
 ## Alpine APK and OpenRC
 
 Install `alpine-sdk`, `openrc`, and `python3` on the Alpine build host. Configure `abuild` as an unprivileged builder with an operator-controlled package signing key. For a new local builder, `abuild-keygen -a -n` creates a key and configures `abuild` to use it. Install only the corresponding public key in `/etc/apk/keys/` on the trusted builder and target. Verify the public key with its owner before importing it.

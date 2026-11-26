@@ -1,0 +1,20 @@
+pkgname=all-os-openedr
+pkgver=${OPENEDR_ARCH_PKGVER:?Run packaging/arch/build.sh}
+pkgrel=1
+pkgdesc='OpenEDR process telemetry preview for Linux'
+arch=('any')
+url='https://github.com/Cormier-Solutions-LLC/all-os-openedr'
+license=('LicenseRef-CASL')
+depends=('python' 'systemd')
+install=all-os-openedr.install
+source=(all-os-openedr.tar.gz)
+
+package() {
+    cd "$srcdir/$pkgname"
+    install -d "$pkgdir/usr/lib/$pkgname/all_os_openedr"
+    install -m 0644 all_os_openedr/*.py "$pkgdir/usr/lib/$pkgname/all_os_openedr/"
+    install -D -m 0644 "$pkgname.service" "$pkgdir/usr/lib/systemd/system/$pkgname.service"
+    install -D -m 0644 "80-$pkgname.preset" "$pkgdir/usr/lib/systemd/system-preset/80-$pkgname.preset"
+    install -d "$pkgdir/usr/share/licenses/$pkgname"
+    install -m 0644 LICENSE.md NOTICE.md "$pkgdir/usr/share/licenses/$pkgname/"
+}
