@@ -28,6 +28,7 @@ from all_os_openedr.apparmor_policy import policy_path, profile_name, render_pro
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
+from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -393,15 +394,18 @@ for mask in ("w", "a", "l", "c", "d", "wc"):
     assert file_rule.search(f'{record} denied_mask="{mask}"')
 assert not file_rule.search(f'{record} denied_mask="r" type=SYSCALL denied_mask="w"')
 assert not file_rule.search(record.replace('class="file"', 'class="net"') + ' denied_mask="w"')
-ima_rule = audit_rules.find("rule[@id='110119']")
-ima_match = re.compile(ima_rule.findtext("match"), re.ASCII)
-ima_failure = ('type=INTEGRITY_DATA msg=audit(1795728256.146:111): pid=852 uid=0 auid=1000 ses=3 '
-               'subj=unconfined op=appraise_data cause=missing-hash comm="python3" name="/srv/exec/sample" '
-               'dev="vdc" ino=15 res=0 errno=0')
-assert ima_match.search(ima_failure)
-assert ima_match.search(ima_failure + '\x1dUID="root" AUID="debian"')
-assert not ima_match.search(ima_failure.replace("res=0", "res=1"))
-assert not ima_match.search(ima_failure.replace("op=appraise_data", "op=collect_data"))
+ima_failure = (b'type=INTEGRITY_DATA msg=audit(1795728256.146:111): pid=852 uid=0 auid=1000 ses=3 '
+               b'subj=unconfined op=appraise_data cause=missing-hash comm="python3" name="/srv/exec/sample" '
+               b'dev="vdc" ino=15 res=0 errno=0')
+ima_event = parse_ima_failure(ima_failure + b'\x1dUID="root" AUID="debian"', "host", "boot")
+assert ima_event["openedr_ima_cause"] == "missing-hash"
+assert ima_event["openedr_ima_auid"] == 1000 and ima_event["openedr_pid"] == 852
+assert ima_event["openedr_executable_path"] == "/srv/exec/sample"
+assert ima_event["openedr_event_id"] == parse_ima_failure(ima_failure, "host", "boot")["openedr_event_id"]
+assert parse_ima_failure(ima_failure.replace(b"res=0", b"res=1"), "host", "boot") is None
+assert parse_ima_failure(ima_failure.replace(b"op=appraise_data", b"op=collect_data"), "host", "boot") is None
+ima_rule = ElementTree.parse(integration / "110100-openedr_rules.xml").find("rule[@id='110119']")
+assert re.fullmatch(ima_rule.findtext("field[@name='openedr_event']"), ima_event["openedr_event"])
 samba_feed = ElementTree.parse(integration / "samba-localfile.xml")
 assert samba_feed.findtext("location") == "/var/log/samba/openedr-share-audit.log"
 assert samba_feed.findtext("log_format") == "syslog"
@@ -437,6 +441,8 @@ for key, field_type in (
     ("openedr_executable_sha256", "keyword"),
     ("openedr_executable_verdict", "keyword"),
     ("openedr_executable_size", "long"),
+    ("openedr_ima_auid", "long"),
+    ("openedr_ima_cause", "keyword"),
 ):
     assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
@@ -466,11 +472,12 @@ cmp packaging/debian/all-os-openedr-executable.service \
     "$work/package/usr/lib/systemd/system/all-os-openedr-executable.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-ima"
+test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-ima-audit"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
-for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml \
+for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml \
     110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
