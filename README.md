@@ -1,4 +1,19 @@
-# OpenEDR 
+# All OS OpenEDR
+
+This repository preserves the source and history of [ComodoSecurity/openedr](https://github.com/ComodoSecurity/openedr) and adds a Linux and Wazuh telemetry preview. This software is subject to the terms of the Comodo Available Source License Agreement. Use and redistribution are governed by [LICENSE.md](LICENSE.md) and the [notices](NOTICE.md).
+
+| Component | Current scope |
+| --- | --- |
+| Debian 13 | Versioned package for an unprivileged, polling process telemetry preview |
+| Wazuh | Direct JSON log collection and a manager rule for preview events |
+| OpenSearch | Wazuh alert forwarding example for an existing TLS-protected cluster |
+| Kubernetes | Helm chart and read-only management API for this telemetry |
+| macOS | Installer entry point stub |
+| Windows | Upstream Windows source. Downstream Windows binaries require separate redistribution clearance and a working build. |
+
+See the [installation and delivery guide](docs/all-os-openedr.md), [project board](https://github.com/orgs/Cormier-Solutions-LLC/projects/5), and [milestones](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestones).
+
+## Upstream OpenEDR documentation
 [![OpenEDR](https://techtalk.comodo.com/wp-content/uploads/2020/09/logo_small.jpg)](https://openedr.com/)
 [![Slack](https://img.shields.io/badge/slack-join-blue.svg)](https://openedr.com/register/) [![Email](https://img.shields.io/badge/email-join-blue.svg)](mailto:register@openedr.com)
 

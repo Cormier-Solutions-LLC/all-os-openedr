@@ -1,0 +1,16 @@
+replicaCount: 3
+image: ""
+# Example format https://opensearch.example.internal:9200
+opensearchUrl: ""
+opensearchIndexPrefix: openedr-alerts-v1
+# Required Secret keys are username, password and ca.crt.
+opensearchSecret: ""
+# Required Secret key is token. Use at least 32 random ASCII characters.
+managementSecret: ""
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi

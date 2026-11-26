@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+fi
+if [ "$1" = purge ]; then
+    deb-systemd-helper purge all-os-openedr.service >/dev/null
+fi

@@ -1,0 +1,149 @@
+name: Preview CI and release
+on:
+  push:
+    branches: [main, 'codex/**', 'release/**', 'release-*']
+  pull_request:
+    types: [opened, synchronize, reopened]
+  schedule:
+    - cron: '47 7 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [nightly, stable]
+        default: nightly
+permissions:
+  contents: read
+concurrency:
+  group: preview-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  contributor:
+    name: Contributor preview checks
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.actor != 'cormierconsulting' || github.triggering_actor != 'cormierconsulting' ||
+       github.event.pull_request.user.login != 'cormierconsulting' ||
+       github.event.pull_request.head.repo.full_name != github.repository ||
+       !startsWith(github.event.pull_request.head.ref, 'codex/') &&
+       !startsWith(github.event.pull_request.head.ref, 'release/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - run: sh scripts/check-preview.sh
+
+  maintainer:
+    name: Maintainer preview checks
+    if: >-
+      github.repository == 'Cormier-Solutions-LLC/all-os-openedr' &&
+      github.actor == 'cormierconsulting' && github.triggering_actor == 'cormierconsulting' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login == 'cormierconsulting' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        (startsWith(github.event.pull_request.head.ref, 'codex/') ||
+         startsWith(github.event.pull_request.head.ref, 'release/'))) ||
+       ((github.event_name == 'schedule' || inputs.channel == 'nightly') && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && startsWith(github.ref, 'refs/heads/release/')))
+    runs-on: cormier-runners
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: version
+        name: Resolve release version
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          CHANNEL_INPUT: ${{ inputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="${CHANNEL_INPUT:-nightly}"
+          if [[ "$channel" == stable ]]; then
+            version="${GITHUB_REF#refs/heads/release/}"
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$(git rev-list -n 1 "refs/tags/v$version")" = "$GITHUB_SHA"
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          else
+            version="0.1.0-nightly.$(date -u +%Y%m%d).${GITHUB_SHA:0:12}"
+          fi
+          printf 'version=%s\nchannel=%s\n' "$version" "$channel" >> "$GITHUB_OUTPUT"
+      - name: Verify preview
+        if: steps.version.outputs.version == ''
+        run: sh scripts/check-preview.sh
+      - name: Build release assets
+        if: steps.version.outputs.version != ''
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: sh scripts/release-assets.sh "$RELEASE_VERSION" "$RUNNER_TEMP/preview-dist"
+      - name: Transfer assets to release job
+        if: steps.version.outputs.version != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: all-os-openedr-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/preview-dist/*
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    name: Publish preview assets
+    needs: maintainer
+    if: needs.maintainer.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: all-os-openedr-${{ needs.maintainer.outputs.version }}
+          path: dist
+      - name: Validate and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.maintainer.outputs.version }}
+          CHANNEL: ${{ needs.maintainer.outputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          for asset in ./*; do [[ "$asset" == *"$VERSION"* ]]; done
+          if grep -Eq '(^|[ /])\.\.(/|$)|  /' "SHA256SUMS-$VERSION.txt"; then exit 1; fi
+          sha256sum --check "SHA256SUMS-$VERSION.txt"
+          notes="This software is subject to the terms of the Comodo Available Source License Agreement. These preview assets cover Debian and the read-only management API."
+          if [[ "$CHANNEL" == stable ]]; then
+            tag="v$VERSION"
+            mapfile -t prs < <(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+              --jq '.[] | select(.merged_at != null and .user.login == "cormierconsulting") | .number')
+            reviewed=false
+            for pr in "${prs[@]}"; do
+              review=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
+                --jq ".[] | select(.commit_id == \"$GITHUB_SHA\" and .user.login == \"chatgpt-codex-connector[bot]\" and .state != \"DISMISSED\") | .id")
+              if [[ -n "$review" ]]; then reviewed=true; break; fi
+            done
+            if [[ "$reviewed" != true ]]; then
+              echo "Stable publication requires a Codex review associated with the release commit."
+              exit 1
+            fi
+            options=(--verify-tag --latest)
+          else
+            tag="$VERSION"
+            options=(--prerelease --latest=false --target "$GITHUB_SHA")
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir "$RUNNER_TEMP/published-assets"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "*$VERSION*" --dir "$RUNNER_TEMP/published-assets"
+            cd "$RUNNER_TEMP/published-assets"
+            sha256sum --check "SHA256SUMS-$VERSION.txt"
+            exit 0
+          fi
+          gh release create "$tag" ./* --repo "$GITHUB_REPOSITORY" --title "All OS OpenEDR $VERSION" --notes "$notes" "${options[@]}"
