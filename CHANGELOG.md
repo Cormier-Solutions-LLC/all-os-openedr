@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Run unknown executables inside an isolated environment when a managed Debian 13 service uses the local verdict launcher. Route launch decisions to Wazuh.
 - Add kernel IMA execution approval for a dedicated Debian ext4 volume, with local SHA-256 approval and Wazuh appraisal failure alerts.
 - Add opt-in Debian executable evidence from kernel event descriptors, with SHA-256, offline catalog verdicts, and Wazuh alerts for untrusted matches.
 - Add opt-in Debian configuration change monitoring for selected system and user paths, with Linux Audit attribution and a Wazuh investigation rule.

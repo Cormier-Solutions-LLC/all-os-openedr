@@ -18,6 +18,7 @@ import struct
 import sys
 import uuid
 from argparse import ArgumentTypeError
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
+from all_os_openedr.containment import namespace_status
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
@@ -43,10 +45,12 @@ with TemporaryDirectory() as temporary:
     with candidate.open("rb") as opened:
         candidate.unlink()
         candidate.write_bytes(b"replacement")
-        observation = inspect_descriptor(opened.fileno())
+        snapshot = BytesIO()
+        observation = inspect_descriptor(opened.fileno(), snapshot=snapshot)
         assert observation["openedr_executable_sha256"] == digest
         assert observation["openedr_executable_format"] == "script"
         assert observation["openedr_executable_path"].endswith(" (deleted)")
+        assert snapshot.getvalue() == content
     with candidate.open("wb+") as opened:
         opened.truncate(MAX_EXECUTABLE_SIZE + 1)
         observation = inspect_descriptor(opened.fileno())
@@ -406,6 +410,18 @@ assert parse_ima_failure(ima_failure.replace(b"res=0", b"res=1"), "host", "boot"
 assert parse_ima_failure(ima_failure.replace(b"op=appraise_data", b"op=collect_data"), "host", "boot") is None
 ima_rule = ElementTree.parse(integration / "110100-openedr_rules.xml").find("rule[@id='110119']")
 assert re.fullmatch(ima_rule.findtext("field[@name='openedr_event']"), ima_event["openedr_event"])
+status = b'{"child-pid":456,"pid-namespace":789}\n{"exit-code":42}\n'
+assert namespace_status(BytesIO(status), 42) == 456
+assert namespace_status(BytesIO(status), 0) is None
+assert namespace_status(BytesIO(status.splitlines()[0]), 42) is None
+assert namespace_status(BytesIO(b'[]\n{"exit-code":42}\n'), 42) is None
+containment = ElementTree.parse(integration / "containment-localfile.xml")
+assert containment.findtext("location") == "/var/log/all-os-openedr-containment/launches.jsonl"
+assert containment.findtext("log_format") == "json"
+launch_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
+assert launch_rules.find("rule[@id='110120']/field").attrib["name"] == "openedr_event"
+assert launch_rules.findtext("rule[@id='110121']/if_sid") == "110120"
+assert launch_rules.findtext("rule[@id='110122']/if_sid") == "110120"
 samba_feed = ElementTree.parse(integration / "samba-localfile.xml")
 assert samba_feed.findtext("location") == "/var/log/samba/openedr-share-audit.log"
 assert samba_feed.findtext("log_format") == "syslog"
@@ -443,6 +459,10 @@ for key, field_type in (
     ("openedr_executable_size", "long"),
     ("openedr_ima_auid", "long"),
     ("openedr_ima_cause", "keyword"),
+    ("openedr_containment_decision", "keyword"),
+    ("openedr_containment_reason", "keyword"),
+    ("openedr_containment_exit_code", "integer"),
+    ("openedr_containment_pid", "long"),
 ):
     assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
@@ -472,12 +492,13 @@ cmp packaging/debian/all-os-openedr-executable.service \
     "$work/package/usr/lib/systemd/system/all-os-openedr-executable.service"
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-ima"
+test -x "$work/package/usr/bin/all-os-openedr-launch"
 test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-ima-audit"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
-for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml \
+for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml \
     110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
