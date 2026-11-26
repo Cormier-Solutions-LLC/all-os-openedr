@@ -1,0 +1,20 @@
+<group name="openedr,audit,">
+  <rule id="110110" level="8">
+    <if_sid>80700</if_sid>
+    <field name="audit.type" type="pcre2">^SYSCALL$</field>
+    <field name="audit.success" type="pcre2">^yes$</field>
+    <field name="audit.key" type="pcre2">^openedr-restricted-exec$</field>
+    <description>OpenEDR protected executable used by an unexpected login identity</description>
+    <options>no_full_log</options>
+    <group>openedr_execution_policy,</group>
+  </rule>
+  <rule id="110111" level="3">
+    <if_sid>80700</if_sid>
+    <field name="audit.type" type="pcre2">^SYSCALL$</field>
+    <field name="audit.success" type="pcre2">^yes$</field>
+    <field name="audit.key" type="pcre2">^openedr-session-exec$</field>
+    <description>OpenEDR login session executed a process</description>
+    <options>no_full_log</options>
+    <group>openedr_process_execution,</group>
+  </rule>
+</group>

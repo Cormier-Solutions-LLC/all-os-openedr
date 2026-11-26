@@ -1,14 +1,14 @@
 # All OS OpenEDR
 
-This repository preserves the source and history of [ComodoSecurity/openedr](https://github.com/ComodoSecurity/openedr) and adds a Linux and Wazuh telemetry preview. This software is subject to the terms of the Comodo Available Source License Agreement. Use and redistribution are governed by [LICENSE.md](LICENSE.md) and the [notices](NOTICE.md).
+This repository preserves the source and history of [ComodoSecurity/openedr](https://github.com/ComodoSecurity/openedr) and adds a Linux endpoint detection and Wazuh integration preview. This software is subject to the terms of the Comodo Available Source License Agreement. Use and redistribution are governed by [LICENSE.md](LICENSE.md) and the [notices](NOTICE.md).
 
 | Component | Current scope |
 | --- | --- |
-| Debian 13 | Versioned package for an unprivileged, polling process telemetry preview |
+| Debian 13 | Versioned package for unprivileged process polling and an optional kernel Audit execution policy on amd64 |
 | Enterprise Linux and Fedora | RPM source builds with container qualification on Rocky Linux 9 and 10 and Fedora 44 |
 | Arch Linux | Versioned pacman package and opt-in systemd service for x86_64 |
 | Alpine Linux | APK source build and opt-in OpenRC service qualified in Alpine 3.23 and 3.24 containers |
-| Wazuh | Direct JSON log collection and a manager rule for preview events |
+| Wazuh | Direct collection of preview JSON and Linux Audit events, with a protected-executable detection rule |
 | OpenSearch | Wazuh alert forwarding example for an existing TLS-protected cluster |
 | Kubernetes | Helm chart and read-only management API for this telemetry |
 | macOS | Installer entry point stub |
