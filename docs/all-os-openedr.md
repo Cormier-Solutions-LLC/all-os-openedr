@@ -73,6 +73,27 @@ Replace the example path and login UID with your policy values. The command only
 
 On the enrolled endpoint, merge the packaged `/usr/share/all-os-openedr/wazuh/audit-localfile.xml` into the Wazuh agent configuration if the agent does not already collect `/var/log/audit/audit.log` with the `audit` format. On the manager, install the packaged `110110-openedr-execution_rules.xml` in its local rules directory, confirm rule IDs 110110 through 110113 are available, and validate the manager configuration. Restart the agent and manager after changing their respective configurations. An unexpected login UID launching the protected executable raises rule 110110. Optional session execution events use rule 110111. AppArmor execution denials raise rule 110112. Denied file mutations under an OpenEDR AppArmor profile raise rule 110113. Both AppArmor rules retain the original audit record as evidence.
 
+### Monitor changes to Debian configuration
+
+Choose the existing files and directory trees that control services, scheduling, or user startup on the endpoint. For example, this monitors service overrides, system cron entries, and one user's service and shell configuration. Select paths that exist on the target host. The generator resolves symbolic links and emits rules for the resulting paths.
+
+```sh
+sudo all-os-openedr-audit-rules \
+    --watch-config /etc/systemd/system \
+    --watch-config /etc/cron.d \
+    --watch-config /home/operator/.config/systemd/user \
+    --watch-config /home/operator/.profile > openedr-configuration.rules
+cat openedr-configuration.rules
+sudo install -o root -g root -m 0600 openedr-configuration.rules /etc/audit/rules.d/41-openedr-configuration.rules
+sudo augenrules --load
+sudo auditctl -l -k openedr-config-change
+sudo ausearch -k openedr-config-change -i
+```
+
+These rules report successful write access and attribute-changing operations. A write-capable open can be recorded before any write occurs. Audit records filesystem operations such as rename and unlink within the configured scope and retains the process, effective UID, and login UID when set. Ordinary reads and byte-level changes are outside this rule set. For directory trees, verify coverage after a mount or a watched directory changes. Check for earlier Audit rules that could win the first match and monitor the `lost` counter during normal endpoint activity. [Debian Linux Audit filters](https://manpages.debian.org/trixie/auditd/auditctl.8.en.html)
+
+Reuse the Audit localfile stanza above. Reserve rule ID `110118` and update the manager's `110110-openedr-execution_rules.xml` before generating a benign change. Search the Wazuh alerts for `rule.id:110118`. The alert preserves the grouped Audit record, including additional paths on operations such as rename. Use the alert's executable, PID, user fields, and full Audit record to investigate. File contents are outside the alert. Roll back by removing `41-openedr-configuration.rules` and deleting only those rules with `sudo auditctl -D -k openedr-config-change`. Confirm `auditctl -l -k openedr-config-change` no longer lists the configuration watches. If the endpoint uses immutable Audit rules, schedule a reboot for the change to take effect.
+
 ### Pre-execution control for a managed workload
 
 On a Debian 13 endpoint with AppArmor enabled, start a systemd service through `aa-exec --immediate` under a dedicated unprivileged user. The kernel checks the service and its descendants against the loaded allowlist before each executable launch, including while the management backend is unavailable. Enforcement applies within the assigned service context. Profile creation and attachment are explicit administrator actions.
