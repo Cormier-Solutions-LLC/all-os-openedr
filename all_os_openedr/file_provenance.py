@@ -277,7 +277,19 @@ class FileProvenance:
             if path is not None:
                 details["openedr_file_path"] = visible_text(path)
                 details["openedr_file_path_source"] = "observed_target_handle"
-        return [{**self.base_event(kind), **details} for bit, kind in EVENTS.items() if mask & bit]
+        # A single notification can contain several operation bits with no ordering between them.
+        common = self.base_event("file.notification")
+        notification_id = common["openedr_event_id"]
+        return [
+            {
+                **common,
+                **details,
+                "openedr_event": kind,
+                "openedr_event_id": uuid.uuid4().hex,
+                "openedr_file_notification_id": notification_id,
+            }
+            for bit, kind in EVENTS.items() if mask & bit
+        ]
 
     def same_mount(self, expected):
         try:

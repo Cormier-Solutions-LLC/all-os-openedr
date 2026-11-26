@@ -320,6 +320,7 @@ for key, field_type in (
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),
+    ("openedr_file_notification_id", "keyword"),
     ("openedr_file_observed_uid", "long"),
     ("openedr_file_old_path", "keyword"),
 ):

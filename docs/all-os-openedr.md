@@ -51,7 +51,7 @@ The service uses `CAP_SYS_ADMIN` to open and mark the fanotify queue, then drops
 
 Add the [file provenance localfile stanza](../integrations/wazuh/file-provenance-localfile.xml) to the enrolled agent and install the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. File activity uses rule `110105`. Rule `110106` reports a stream gap such as queue overflow. The kernel does not provide an exact dropped-record count for this queue. Install template version 4 for new dedicated OpenSearch indices to query file IDs, both rename paths, and actor IDs. Restrict access to the logs and indices because they can contain filenames and account identifiers.
 
-Fanotify can coalesce observations. Full-file read and write hashing, mapped I/O coverage, and remote changes on network shares need additional sensors. [Linux fanotify event semantics](https://man7.org/linux/man-pages/man7/fanotify.7.html)
+Fanotify can coalesce operations. Rows with the same notification ID share one kernel report and observation time. Use that ID when counting notifications or interpreting operation order. Full-file read and write hashing, mapped I/O coverage, and remote changes on network shares need additional sensors. [Linux fanotify event semantics](https://man7.org/linux/man-pages/man7/fanotify.7.html)
 
 ### Kernel execution detection with Wazuh
 

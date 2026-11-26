@@ -57,6 +57,7 @@
             "openedr_response_deadline_ms": {"type": "long"},
             "openedr_file_scope": {"type": "keyword", "ignore_above": 4096},
             "openedr_file_mask": {"type": "long"},
+            "openedr_file_notification_id": {"type": "keyword"},
             "openedr_file_directory": {"type": "boolean"},
             "openedr_file_filesystem_id": {"type": "keyword"},
             "openedr_file_object_id": {"type": "keyword"},
