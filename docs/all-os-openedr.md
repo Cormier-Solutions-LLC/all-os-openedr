@@ -130,6 +130,37 @@ Install `/usr/share/all-os-openedr/samba/rsyslog.conf` as a root-owned file unde
 
 Rsyslog routes the share's original VFS audit payloads under the dedicated `openedr_smb_audit` tag. Wazuh alerts on failed file mutation calls and failed opens that requested mutation access. It retains the captured operation, share, account, client address, and audit line. The VFS log reports operation failures and their intent. It can differ from the SMB status returned to the client, so use client or server protocol evidence when an exact denial reason matters. Protect access to these logs and apply the retention policy for your environment. [Samba full-audit format](https://manpages.debian.org/trixie/samba/vfs_full_audit.8.en.html)
 
+### Isolate a Debian endpoint through Wazuh
+
+Enable this response only on enrolled Debian 13 endpoints with an out-of-band recovery console. The endpoint's kernel blocks IPv4 and IPv6 input, output, and routed forwarding while the lease is active. It keeps loopback, IPv6 neighbor discovery, and the outbound TCP connection to one configured Wazuh manager address. Existing endpoint firewall rules still apply. Use a stable address and route, and check management and console access before enabling the response. Layer 2 forwarding, separately attached network namespaces, and a privileged process that can alter firewall rules require their own controls.
+
+1. Install `nftables` and `openssh-client` on the endpoint. Create `/etc/all-os-openedr/` owned by root. Give each endpoint a unique 32-character lowercase hexadecimal ID, set its enrolled Wazuh agent ID, and specify its manager's literal address and TCP port in root-owned `response.json` with mode `0600`. For example, `{"endpoint":"e24d48c344944aa9a902cbc5ed56b7495","agent":"001","manager":{"ip":"192.0.2.10","port":1514}}`.
+2. Put each approved operator's public signing key in root-owned `response-signers` with mode `0600`. An allowed-signers entry starts with the operator identity, then `namespaces="all-os-openedr-response-v1"` and the public key. Keep the private keys on operator workstations. Give the dispatch account the Wazuh `active-response:command` permission only for the intended `agent:id` or group. [OpenSSH allowed signers](https://man.openbsd.org/ssh-keygen#ALLOWED_SIGNERS) · [Wazuh RBAC](https://documentation.wazuh.com/current/user-manual/api/rbac/reference.html)
+3. Install the packaged Wazuh launcher with the following command. Add [the response localfile stanza](../integrations/wazuh/response-localfile.xml) on the endpoint and reload the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Set up the dedicated OpenSearch template version 3 if using that forwarding route. Keep automatic alert triggers disabled for this launcher.
+
+```sh
+sudo install -o root -g wazuh -m 0750 \
+  /usr/share/all-os-openedr/wazuh/all-os-openedr-response \
+  /var/ossec/active-response/bin/all-os-openedr-response
+```
+
+Select the alert and verify its endpoint in Wazuh. Use a synchronized signer workstation and endpoint clock. The endpoint accepts an approval for up to 60 seconds after signing. The example signs a 120-second lease and sends it to agent `001`. Set `ENDPOINT_ID`, `ALERT_ID`, and `SIGNING_KEY` from your environment. `WAZUH_AUTH_HEADER` is a private file containing the API authorization header, and `WAZUH_CA` is the API's trusted CA certificate.
+
+```sh
+umask 077
+work=$(mktemp -d)
+all-os-openedr-response sign isolate --endpoint "$ENDPOINT_ID" --agent 001 \
+  --alert "$ALERT_ID" --signer incident-operator --key "$SIGNING_KEY" \
+  --seconds 120 > "$work/isolate.json"
+curl --fail-with-body --cacert "$WAZUH_CA" --header "@$WAZUH_AUTH_HEADER" \
+  --header 'Content-Type: application/json' --request PUT \
+  --data-binary "@$work/isolate.json" "$WAZUH_API/active-response?agents_list=001"
+```
+
+Save the lease ID printed by the signer. The Wazuh API reports delivery to the active response queue. Look for `openedr_response_result: isolated` in rule `110104` before treating isolation as applied. Audit records include the signed operator, agent, alert, and lease IDs. An `authorized` record shows the endpoint accepted the approval. `isolated` and `released` record firewall changes. The deadline remains searchable even if the endpoint cannot report when the kernel lease ends.
+
+To restore access early, repeat the sample with `sign release --lease LEASE_ID` in place of `sign isolate`, omit `--seconds`, and send the resulting body to the same agent. Use `sudo all-os-openedr-response local-release` from the endpoint console if the management path is unavailable. An older approval cannot change a later lease. The in-kernel timeout restores filtering behavior if the manager or Wazuh agent stops, and reboot clears the temporary rules. Avoid saving the response table into persistent firewall configuration. If local release is unavailable, an administrator can inspect `nft list table inet all_os_openedr_response` and delete that table after verifying the lease comment. [Wazuh Active Response API](https://documentation.wazuh.com/current/user-manual/api/reference.html) · [nftables element timeouts](https://netfilter.org/projects/nftables/manpage.html)
+
 The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 
 ## Enterprise Linux and Fedora RPM preview

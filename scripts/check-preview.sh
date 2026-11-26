@@ -8,6 +8,7 @@ trap 'rm -rf -- "$work"' EXIT
 python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
 import json
+import base64
 import re
 import struct
 import sys
@@ -22,6 +23,7 @@ from all_os_openedr.apparmor_policy import policy_path, profile_name, render_pro
 from all_os_openedr.audit_rules import executable, login_uid, render_rules
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
+from all_os_openedr.response import apply, decode_token
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
 with TemporaryDirectory() as temporary:
@@ -210,6 +212,26 @@ assert lifecycle_feed.findtext("log_format") == "json"
 lifecycle_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
 assert lifecycle_rules.find("rule[@id='110102']") is not None
 assert lifecycle_rules.find("rule[@id='110103']") is not None
+assert lifecycle_rules.find("rule[@id='110104']") is not None
+response_feed = ElementTree.parse(integration / "response-localfile.xml")
+assert response_feed.findtext("location") == "/var/log/all-os-openedr-response/actions.jsonl"
+assert response_feed.findtext("log_format") == "json"
+approval = {
+    "action": "release", "endpoint": "a" * 32, "agent": "001", "lease": "b" * 32,
+    "alert": "1750012345.1234", "signer": "incident-operator", "issued_ms": 1750012345000, "seconds": 0,
+}
+encoded = base64.urlsafe_b64encode(json.dumps(approval).encode()).decode()
+assert decode_token(f"v1.{encoded}.")[0] == approval
+with patch("all_os_openedr.response.owned_table", return_value=("c" * 32, True)), \
+     patch("all_os_openedr.response.time.time_ns", return_value=approval["issued_ms"] * 1_000_000), \
+     patch("all_os_openedr.response.nft") as firewall:
+    try:
+        apply(approval, None, None)
+    except ValueError as error:
+        assert str(error) == "wrong_active_lease"
+    else:
+        raise AssertionError("A release for another lease was accepted")
+    firewall.assert_not_called()
 audit_feed = ElementTree.parse(integration / "audit-localfile.xml")
 assert audit_feed.findtext("location") == "/var/log/audit/audit.log"
 assert audit_feed.findtext("log_format") == "audit"
@@ -260,6 +282,8 @@ for key, field_type in (
     ("openedr_wait_status", "long"),
     ("openedr_thread_group_leader", "boolean"),
     ("openedr_missing_events", "long"),
+    ("openedr_response_lease", "keyword"),
+    ("openedr_response_deadline_ms", "long"),
 ):
     assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
@@ -286,8 +310,10 @@ cmp packaging/debian/all-os-openedr-lifecycle.service \
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
+test -x "$work/package/usr/bin/all-os-openedr-response"
+test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml \
-    lifecycle-localfile.xml 110100-openedr_rules.xml \
+    lifecycle-localfile.xml response-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done
