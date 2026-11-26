@@ -69,6 +69,8 @@ class Index:
 
 
 class Manager(BaseHTTPRequestHandler):
+    timeout = 5
+
     def log_message(self, format, *args):
         # Request paths and client-controlled values may contain sensitive data.
         pass
@@ -97,7 +99,7 @@ class Manager(BaseHTTPRequestHandler):
                 return
         try:
             events = self.server.index.search(0 if self.path == "/readyz" else 25)
-        except (OSError, URLError, KeyError, TypeError, ValueError):
+        except (AttributeError, OSError, URLError, KeyError, TypeError, ValueError):
             self.reply(503, {"status": "unavailable"})
             return
         self.reply(200, {"events": events} if self.path == "/v1/events" else {"status": "ready"})

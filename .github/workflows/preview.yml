@@ -70,13 +70,15 @@ jobs:
         run: |
           set -euo pipefail
           channel="${CHANNEL_INPUT:-nightly}"
+          base_version=$(cat VERSION)
+          [[ "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           if [[ "$channel" == stable ]]; then
             version="${GITHUB_REF#refs/heads/release/}"
-            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$version" = "$base_version"
             test "$(git rev-list -n 1 "refs/tags/v$version")" = "$GITHUB_SHA"
             git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           else
-            version="0.1.0-nightly.$(date -u +%Y%m%d).${GITHUB_SHA:0:12}"
+            version="$base_version-nightly.$(date -u +%Y%m%d).g${GITHUB_SHA:0:12}"
           fi
           printf 'version=%s\nchannel=%s\n' "$version" "$channel" >> "$GITHUB_OUTPUT"
       - name: Verify preview
