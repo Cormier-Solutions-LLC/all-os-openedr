@@ -124,13 +124,28 @@ jobs:
           notes="This software is subject to the terms of the Comodo Available Source License Agreement. These preview assets cover Debian and the read-only management API."
           if [[ "$CHANNEL" == stable ]]; then
             tag="v$VERSION"
-            mapfile -t prs < <(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
-              --jq '.[] | select(.merged_at != null and .user.login == "cormierconsulting") | .number')
+            target_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha)
+            mapfile -t prs < <(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+              --jq ".[] | select(.merged_at != null and .user.login == \"cormierconsulting\" and
+                .base.ref == \"main\" and (.merge_commit_sha == \"$GITHUB_SHA\" or .head.sha == \"$GITHUB_SHA\")) |
+                [.number, .head.sha] | @tsv")
             reviewed=false
-            for pr in "${prs[@]}"; do
+            for entry in "${prs[@]}"; do
+              IFS=$'\t' read -r pr reviewed_head <<< "$entry"
+              reviewed_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$reviewed_head" --jq .tree.sha)
+              [[ "$target_tree" == "$reviewed_tree" ]] || continue
               review=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
-                --jq ".[] | select(.commit_id == \"$GITHUB_SHA\" and .user.login == \"chatgpt-codex-connector[bot]\" and .state != \"DISMISSED\") | .id")
+                --jq ".[] | select(.commit_id == \"$reviewed_head\" and .user.login == \"chatgpt-codex-connector[bot]\" and .state != \"DISMISSED\") | .id")
               if [[ -n "$review" ]]; then reviewed=true; break; fi
+              mapfile -t requests < <(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
+                --jq ".[] | select(.user.login == \"cormierconsulting\" and
+                  (.body | contains(\"<!-- all-os-openedr-review: $reviewed_head -->\")) and
+                  (.body | startswith(\"@codex review\"))) | .id")
+              for request in "${requests[@]}"; do
+                reaction=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/comments/$request/reactions" \
+                  --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id')
+                if [[ -n "$reaction" ]]; then reviewed=true; break 2; fi
+              done
             done
             if [[ "$reviewed" != true ]]; then
               echo "Stable publication requires a Codex review associated with the release commit."
