@@ -4,7 +4,7 @@ This repository preserves the source and history of [ComodoSecurity/openedr](htt
 
 | Component | Current scope |
 | --- | --- |
-| Debian 13 | Versioned package for process polling, amd64 kernel Audit detection, managed-workload AppArmor protection, and Samba writer authorization |
+| Debian 13 | Versioned package for process polling and kernel lifecycle, amd64 Audit detection, AppArmor protection, and Samba writer authorization |
 | Enterprise Linux and Fedora | RPM source builds with container qualification on Rocky Linux 9 and 10 and Fedora 44 |
 | Arch Linux | Versioned pacman package and opt-in systemd service for x86_64 |
 | Alpine Linux | APK source build and opt-in OpenRC service qualified in Alpine 3.23 and 3.24 containers |

@@ -16,6 +16,22 @@ sudo head -n 1 /var/log/all-os-openedr/events.jsonl
 
 The service runs as a dynamic, unprivileged user without network access. It emits process observations visible through procfs. Short-lived processes can be missed between polls. A restart may emit observations again, with the same event ID for processes that are still running. The preview collects names and PIDs. Command lines, environment values and file content are outside this event contract. Before leaving the preview active, configure and test rotation and retention with the Wazuh log collector in your environment. The collector reopens the output on each nonempty poll, so it follows a new file after rotation.
 
+### Kernel process lifecycle
+
+On a Debian host with the Linux process connector enabled, start the optional lifecycle service. It consumes kernel fork, successful exec, and task exit notifications, including processes that finish between polling samples. It runs without capabilities and uses a separate log path. Use the service in the host namespaces. Events from nested PID namespaces use host PID and thread ID values. [Linux process connector interface](https://github.com/torvalds/linux/blob/v6.12/include/uapi/linux/cn_proc.h)
+
+```sh
+sudo systemctl enable --now all-os-openedr-lifecycle.service
+sudo systemctl status all-os-openedr-lifecycle.service
+sudo head -n 1 /var/log/all-os-openedr-lifecycle/events.jsonl
+```
+
+Fork events carry the parent PID and thread ID, and link to the parent's process identity when its birth was observed. An observed thread group leader's birth supplies the identity carried by subsequent events in the same stream. Task exits record the raw Linux wait status and distinguish leader exits from worker-thread exits. A leader exit alone does not establish that its entire thread group has exited. The kernel does not supply the executable path in these events. Use the separate Audit collector when you need executable path evidence.
+
+Each service start emits a new stream ID. Running processes whose births predate the stream can still emit lifecycle events with host PIDs. Their earlier process identities are unavailable in the new stream. Kernel event IDs incorporate boot ID, CPU, kernel sequence, and monotonic time. When the collector detects loss, it emits `process.stream_gap` and discards prior lineage so subsequent records do not inherit uncertain process identities. Review stream gaps before using the events for a complete timeline.
+
+Merge the packaged `lifecycle-localfile.xml` into the Wazuh agent and install the packaged `110100-openedr_rules.xml` in the manager's local rules directory. Confirm rule IDs 110100 through 110103 are available. Rule 110102 covers lifecycle events and rule 110103 reports loss of continuity. The lifecycle stream can grow quickly on busy hosts. Configure rotation and retention for this separate path and verify that the Wazuh agent follows the new file after rotation.
+
 ### Kernel execution detection with Wazuh
 
 On Debian 13 amd64, Linux Audit can detect a successful launch of a protected executable by a login identity other than the one you approve. Choose a real executable stored under an administrator-controlled path and use the numeric UID of the approved login account. Audit records the original login UID across privilege changes. The policy excludes processes whose login UID is unset, including many system services.
