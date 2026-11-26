@@ -17,8 +17,9 @@ touch /run/openrc/softlevel
 
 service=all-os-openedr
 log=/var/log/$service/events.jsonl
-apk add "$packages/$service-0.0.1-r0.apk"
-apk info -e "$service"
+# The runtime dependencies are already installed. Exercise the signed local package offline.
+apk --no-network add "$packages/$service-0.0.1-r0.apk"
+apk --no-network info -e "$service"
 test ! -e "/etc/runlevels/default/$service"
 test ! -e "/run/$service.pid"
 cmp "$root/LICENSE.md" "/usr/share/licenses/$service/LICENSE.md"
@@ -44,21 +45,21 @@ grep -Eq '^NoNewPrivs:[[:space:]]+1$' "$status"
 python3 -c 'import json, sys; event = json.loads(open(sys.argv[1]).readline()); assert event["openedr_event"] == "process.observed" and len(event["openedr_event_id"]) == 64' "$log"
 
 first_event=$(head -n 1 "$log")
-apk add "$packages/$service-0.0.2-r0.apk"
-apk list --installed "$service" | grep -q "^$service-0\.0\.2-r0 "
+apk --no-network add "$packages/$service-0.0.2-r0.apk"
+apk --no-network list --installed "$service" | grep -q "^$service-0\.0\.2-r0 "
 rc-service "$service" restart
 rc-service "$service" status
 test "$(cat "/run/$service.pid")" != "$supervisor"
 test "$(head -n 1 "$log")" = "$first_event"
 
 rc-update add "$service" default
-apk del "$service"
+apk --no-network del "$service"
 test ! -e "/etc/init.d/$service"
 test ! -e "/etc/runlevels/default/$service"
 test ! -e "/run/$service.pid"
 test "$(head -n 1 "$log")" = "$first_event"
 
-apk add "$packages/$service-0.0.2-r0.apk"
-apk del "$service"
+apk --no-network add "$packages/$service-0.0.2-r0.apk"
+apk --no-network del "$service"
 test ! -e "/etc/init.d/$service"
 test "$(head -n 1 "$log")" = "$first_event"
