@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 preview
+
+- Add opt-in Debian 13 amd64 kernel Audit policy for protected-executable detection. An enrolled Wazuh agent can send the kernel event to a manager rule for operator investigation.
+- Provide optional Audit rules for successful login-session executions, including processes that exit between polling samples.
+
 ## 0.5.0
 
 - Publish versioned Arch Linux packages with pacman support for upgrading from nightly to stable.

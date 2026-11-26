@@ -9,10 +9,45 @@ python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
 import json
 import sys
+from argparse import ArgumentTypeError
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from xml.etree import ElementTree
+
+from all_os_openedr.audit_rules import executable, login_uid, render_rules
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
+
+with TemporaryDirectory() as temporary:
+    protected = Path(temporary) / "approved-tool"
+    protected.touch(mode=0o700)
+    path = executable(str(protected))
+    assert list(render_rules(path, login_uid("2300"))) == [
+        f"-a always,exit -F arch={abi} -S execve,execveat -F path={path} "
+        "-F auid!=2300 -F auid!=unset -F success=1 -k openedr-restricted-exec"
+        for abi in ("b64", "b32")
+    ]
+    rules = list(render_rules(path, 2300, login_uid("1000")))
+    for index, abi in enumerate(("b64", "b32")):
+        restricted, session = rules[index * 2:index * 2 + 2]
+        assert f"arch={abi}" in restricted and restricted.endswith("openedr-restricted-exec")
+        assert f"arch={abi}" in session and "-F auid>=1000 -F auid!=unset" in session
+        assert session.endswith("openedr-session-exec")
+    for argument in ("4294967295", "-1", "2300 -D"):
+        try:
+            login_uid(argument)
+        except ArgumentTypeError:
+            pass
+        else:
+            raise AssertionError(f"Accepted invalid login UID {argument!r}")
+    invalid = Path(temporary) / "tool -D"
+    invalid.touch(mode=0o700)
+    try:
+        executable(str(invalid))
+    except ArgumentTypeError:
+        pass
+    else:
+        raise AssertionError("Accepted an executable path with a space")
 
 class InstalledPlugin:
     def load(self):
@@ -36,6 +71,19 @@ assert set(events[0]) == set(fixture)
 assert ElementTree.parse("integrations/wazuh/localfile.xml").findtext("log_format") == "json"
 assert ElementTree.parse("integrations/wazuh/110100-openedr_rules.xml").find("rule[@id='110101']") is not None
 integration = Path("integrations/wazuh")
+audit_feed = ElementTree.parse(integration / "audit-localfile.xml")
+assert audit_feed.findtext("location") == "/var/log/audit/audit.log"
+assert audit_feed.findtext("log_format") == "audit"
+audit_rules = ElementTree.parse(integration / "110110-openedr-execution_rules.xml")
+for rule_id, key in (
+    (110110, "openedr-restricted-exec"),
+    (110111, "openedr-session-exec"),
+):
+    rule = audit_rules.find(f"rule[@id='{rule_id}']")
+    assert rule.findtext("if_sid") == "80700"
+    assert rule.findtext("field[@name='audit.type']") == "^SYSCALL$"
+    assert rule.findtext("field[@name='audit.success']") == "^yes$"
+    assert rule.findtext("field[@name='audit.key']") == f"^{key}$"
 dedicated_indices = ["openedr-alerts-v1-*"]
 template = json.loads((integration / "openedr-index-template.json").read_text())
 assert template["index_patterns"] == dedicated_indices
@@ -59,6 +107,10 @@ dpkg-deb --extract "$package" "$work/package"
 cmp NOTICE.md "$work/package/usr/share/doc/all-os-openedr/NOTICE.md"
 cmp LICENSE.md "$work/package/usr/share/doc/all-os-openedr/copyright"
 test -f "$work/package/usr/lib/systemd/system/all-os-openedr.service"
+test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
+for filename in audit-localfile.xml 110110-openedr-execution_rules.xml; do
+    cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
+done
 (cd "$work/package/usr/lib/all-os-openedr" && python3 -B -m all_os_openedr --once --output "$work/packaged.jsonl")
 test -s "$work/packaged.jsonl"
 set -- --set image=example.invalid/manager:verification --set opensearchUrl=https://opensearch.example.invalid:9200 \

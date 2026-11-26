@@ -7,13 +7,36 @@ This software is subject to the terms of the Comodo Available Source License Agr
 Use the versioned `all-os-openedr_<version>_all.deb` asset from the [GitHub releases](https://github.com/Cormier-Solutions-LLC/all-os-openedr/releases). From the source checkout, build it with `sh packaging/debian/build.sh "$(cat VERSION)" ./dist` on Debian.
 
 ```sh
-sudo apt install ./all-os-openedr_0.2.0_all.deb
+version='<downloaded-version>'
+sudo apt install "./all-os-openedr_${version}_all.deb"
 sudo systemctl enable --now all-os-openedr.service
 sudo systemctl status all-os-openedr.service
 sudo head -n 1 /var/log/all-os-openedr/events.jsonl
 ```
 
 The service runs as a dynamic, unprivileged user without network access. It emits process observations visible through procfs. Short-lived processes can be missed between polls. A restart may emit observations again, with the same event ID for processes that are still running. The preview collects names and PIDs. Command lines, environment values and file content are outside this event contract. Before leaving the preview active, configure and test rotation and retention with the Wazuh log collector in your environment. The collector reopens the output on each nonempty poll, so it follows a new file after rotation.
+
+### Kernel execution detection with Wazuh
+
+On Debian 13 amd64, Linux Audit can detect a successful launch of a protected executable by a login identity other than the one you approve. Choose a real executable stored under an administrator-controlled path and use the numeric UID of the approved login account. Audit records the original login UID across privilege changes. The policy excludes processes whose login UID is unset, including many system services.
+
+```sh
+sudo apt install auditd
+all-os-openedr-audit-rules \
+    --protected-executable /usr/local/libexec/protected-tool \
+    --approved-login-uid 1000 > openedr-execution.rules
+cat openedr-execution.rules
+sudo install -m 0600 openedr-execution.rules /etc/audit/rules.d/40-openedr-execution.rules
+sudo augenrules --load
+sudo auditctl -l
+sudo auditctl -s
+```
+
+Replace the example path and login UID with your policy values. The command only prints rules, so review them before installation. Audit uses the first matching rule. Reconcile these rules with your existing audit configuration, including any earlier suppress rules, broad execution rules, or immutable policy. If the protected executable is replaced or moved, verify the watches against the new executable. To also collect successful executions from logged-in accounts at or above a given UID, pass `--observe-login-execs-from UID`. That option can generate substantial event volume. Monitor the Audit `lost` counter. Audit can record command-line arguments, so restrict access and set retention for both Audit logs and Wazuh data.
+
+On the enrolled endpoint, merge the packaged `/usr/share/all-os-openedr/wazuh/audit-localfile.xml` into the Wazuh agent configuration if the agent does not already collect `/var/log/audit/audit.log` with the `audit` format. On the manager, install the packaged `110110-openedr-execution_rules.xml` in its local rules directory, confirm rule IDs 110110 and 110111 are available, and validate the manager configuration. Restart the agent and manager after changing their respective configurations. An unexpected login UID launching the protected executable raises rule 110110. Optional session execution events use rule 110111. Both use the standard Wazuh alert path.
+
+The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 
 ## Enterprise Linux and Fedora RPM preview
 
