@@ -137,7 +137,19 @@ printf '%s\n' /root/openedr-ima-policy | sudo tee /sys/kernel/security/ima/polic
 
 To persist a tested custom policy on a fresh Debian host, have systemd load it at boot from `/etc/ima/ima-policy`. Retain the previous configuration. To roll back, restore the previous boot policy or remove the added file if there was no previous policy, then reboot. To withdraw one file's local approval, run `sudo all-os-openedr-ima revoke --filesystem /srv/openedr-exec /srv/openedr-exec/approved-program`. The next appraised operation uses the current file and approval. Approve copies that lack the attribute before execution. Code read as ordinary interpreter input is outside the direct execution and executable mapping hooks.
 
-Use the Audit input above and reserve rule ID `110119` on the Wazuh manager. The alert retains the IMA record, including the path, appraisal failure cause, process ID, and login UID. An alert reports appraisal failure. The kernel's configured appraisal mode determines whether the operation is denied. [Linux integrity audit record](https://github.com/torvalds/linux/blob/v6.12/security/integrity/integrity_audit.c)
+For Wazuh alerts, install the packaged Audit dispatcher configuration and the separate JSON input. This keeps each IMA appraisal failure searchable even when the original Audit log groups it with syscall records for another Wazuh rule. The dispatcher writes the raw record, path, failure cause, process ID, and login UID. Kernel appraisal mode determines whether an appraisal failure denies the operation. [Debian Audit plugins](https://manpages.debian.org/trixie/auditd/auditd-plugins.5.en.html)
+
+```sh
+sudo install -d -o root -g root -m 0750 /var/log/all-os-openedr-ima
+sudo touch /var/log/all-os-openedr-ima/audit.jsonl
+sudo chown root:root /var/log/all-os-openedr-ima/audit.jsonl
+sudo chmod 0600 /var/log/all-os-openedr-ima/audit.jsonl
+sudo install -o root -g root -m 0640 /usr/share/all-os-openedr/wazuh/ima-dispatch.conf \
+    /etc/audit/plugins.d/all-os-openedr-ima.conf
+sudo auditctl --signal reload
+```
+
+Merge the packaged `ima-localfile.xml` into the enrolled Wazuh agent. Update `110100-openedr_rules.xml` on the manager and verify rule ID `110119` is available. New dedicated OpenSearch indices use template version 6 for IMA UID, login UID, Audit serial, and failure cause. Configure rotation for the JSON log with root-only file permissions. To stop forwarding, remove the installed Audit plugin configuration and reload Audit before removing the package.
 
 ### Pre-execution control for a managed workload
 

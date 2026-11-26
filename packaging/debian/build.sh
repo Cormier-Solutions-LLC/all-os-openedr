@@ -38,7 +38,10 @@ install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
     "$root/packaging/debian/all-os-openedr-response" \
     "$root/packaging/debian/all-os-openedr-samba-policy" "$stage/usr/bin/"
 install -m 0750 "$root/integrations/wazuh/all-os-openedr-response" "$stage/usr/share/all-os-openedr/wazuh/"
+install -m 0755 "$root/packaging/debian/all-os-openedr-ima-audit" "$stage/usr/lib/all-os-openedr/"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
+    "$root/integrations/wazuh/ima-dispatch.conf" \
+    "$root/integrations/wazuh/ima-localfile.xml" \
     "$root/integrations/wazuh/samba-localfile.xml" \
     "$root/integrations/wazuh/lifecycle-localfile.xml" \
     "$root/integrations/wazuh/file-provenance-localfile.xml" \
