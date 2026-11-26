@@ -110,19 +110,24 @@ jobs:
       contents: write
       pull-requests: read
     steps:
+      - id: staging
+        name: Create an empty publication directory
+        shell: bash
+        run: printf 'path=%s\n' "$(mktemp -d "$RUNNER_TEMP/openedr-publication.XXXXXX")" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: all-os-openedr-${{ needs.maintainer.outputs.version }}
-          path: dist
+          path: ${{ steps.staging.outputs.path }}
       - name: Validate and publish
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.maintainer.outputs.version }}
           CHANNEL: ${{ needs.maintainer.outputs.channel }}
+          ASSET_DIR: ${{ steps.staging.outputs.path }}
         shell: bash
         run: |
           set -euo pipefail
-          cd dist
+          cd "$ASSET_DIR"
           for asset in ./*; do [[ "$asset" == *"$VERSION"* ]]; done
           if grep -Eq '(^|[ /])\.\.(/|$)|  /' "SHA256SUMS-$VERSION.txt"; then exit 1; fi
           sha256sum --check "SHA256SUMS-$VERSION.txt"
@@ -157,9 +162,9 @@ jobs:
             options=(--prerelease --latest=false --target "$GITHUB_SHA")
           fi
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            mkdir "$RUNNER_TEMP/published-assets"
-            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "*$VERSION*" --dir "$RUNNER_TEMP/published-assets"
-            cd "$RUNNER_TEMP/published-assets"
+            published_dir=$(mktemp -d "$RUNNER_TEMP/openedr-published.XXXXXX")
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "*$VERSION*" --dir "$published_dir"
+            cd "$published_dir"
             sha256sum --check "SHA256SUMS-$VERSION.txt"
             exit 0
           fi
