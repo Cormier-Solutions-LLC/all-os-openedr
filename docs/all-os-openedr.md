@@ -36,9 +36,28 @@ Rocky Linux 9 and 10 and Fedora 44 passed container build, install, upgrade, one
 2. Reserve Wazuh local rule IDs 110100 and 110101 and install [the rules](../integrations/wazuh/110100-openedr_rules.xml) under `/var/ossec/etc/rules/` on the manager. Test the [fixture](../integrations/wazuh/process-observed.json) with `/var/ossec/bin/wazuh-logtest`. It should match 110101 at level 3. Adjust collection and severity to the site's alert volume before rolling out broadly.
 3. Validate the Wazuh configuration and restart the services during the approved test window. Confirm a benign endpoint observation in the manager's `alerts.json`.
 4. In a Wazuh-managed indexer such as Wazah's deployment, first verify the existing Filebeat stream by finding the alert in `wazuh-alerts-4.x-*`. If the management API reads those shared indices, set its prefix to `wazuh-alerts-4.x` and grant a read-only role with document-level security scoped to the OpenEDR source.
-5. For a separate OpenSearch destination or dedicated indices, adapt [the Logstash example](../integrations/wazuh/openedr-opensearch.conf) on a host with manager alert stream access. Use an approved CA, a dedicated writer restricted to `openedr-alerts-v1-*`, the Logstash keystore, and a persistent position file. Have the cluster owner create the index template and retention policy. Validate the pipeline before enabling forwarding, then query the integration index for the same `data.openedr_event_id`.
+5. For a separate destination or dedicated indices on the existing OpenSearch cluster, follow the dedicated-index setup below.
 
 References for supported topology and syntax are the [Wazuh OpenSearch integration](https://documentation.wazuh.com/current/integrations-guide/opensearch/index.html) and [Wazuh rule testing](https://documentation.wazuh.com/current/user-manual/ruleset/testing.html). The sample uses the Linux preview's normalized schema. The [upstream Windows guide](../getting-started/SettingFileBeat.md) describes log collection from `C:\ProgramData\edrsvc\log\*`. Capture representative logs on a licensed Windows test endpoint before implementing its normalization adapter.
+
+### Dedicated OpenSearch indices
+
+Apply the following request bodies with a cluster operator identity. Map the roles to separate operator-managed identities. Use the writer only for Logstash and the reader only for alert search.
+
+| API request | Body |
+| --- | --- |
+| `PUT /_index_template/openedr-alerts-v1` | [Index template](../integrations/wazuh/openedr-index-template.json) |
+| `PUT /_plugins/_security/api/roles/openedr_v1_writer` | [Writer role](../integrations/wazuh/openedr-writer-role.json) |
+| `PUT /_plugins/_security/api/roles/openedr_v1_reader` | [Reader role](../integrations/wazuh/openedr-reader-role.json) |
+| `PUT /_plugins/_ism/policies/openedr-alert-retention-v1` | [Optional 30-day retention policy](../integrations/wazuh/openedr-retention-policy.json) |
+
+The optional policy attaches to new dedicated indices and deletes them by index age. Choose the retention interval with the cluster owner before applying it. The index template maps the preview fields explicitly and leaves extra fields out of the mappings.
+
+Install the [Logstash pipeline](../integrations/wazuh/openedr-opensearch.conf) on a host with read-only access to the manager's `alerts.json`. Merge the entry from [openedr-pipelines.yml](../integrations/wazuh/openedr-pipelines.yml) into the host's pipeline settings. Persist Logstash's data directory and the separate `OPENEDR_SINCEDB_PATH` position file. Supply `OPENEDR_OPENSEARCH_URL`, the approved CA at `OPENEDR_OPENSEARCH_CA_FILE`, and `OPENEDR_OPENSEARCH_USERNAME` and `OPENEDR_OPENSEARCH_PASSWORD` from the Logstash keystore. Size the persistent queue and upstream alert retention for the length of outage the site needs to tolerate.
+
+Validate the configuration, generate a benign observation, and query the dedicated index as the reader for its `data.openedr_event_id`. The UTC observation date determines the index and the event ID determines the document key, so an identical alert replay updates the same document. An observation emitted again with a new UTC date can appear in another daily index. Check that the writer receives 403 outside the dedicated index pattern before enabling the route.
+
+For rollback, stop the dedicated forwarder and preserve its queue and position file. Restore the prior pipeline and manager rule configuration, then remove the endpoint stanza from the affected Wazuh agents and validate their configuration. A cluster operator can detach the optional retention policy when preserving the indexed records is required. Keep the existing Wazuh alert route in place during the change.
 
 ## Kubernetes management preview
 

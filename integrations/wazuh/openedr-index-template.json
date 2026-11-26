@@ -1,0 +1,42 @@
+{
+  "index_patterns": ["openedr-alerts-v1-*"],
+  "priority": 200,
+  "version": 1,
+  "template": {
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": {"type": "date"},
+        "timestamp": {
+          "type": "date",
+          "format": "strict_date_optional_time||yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+        },
+        "agent": {
+          "properties": {
+            "id": {"type": "keyword"},
+            "name": {"type": "keyword"}
+          }
+        },
+        "rule": {
+          "properties": {
+            "id": {"type": "keyword"},
+            "level": {"type": "integer"},
+            "description": {"type": "text"}
+          }
+        },
+        "data": {
+          "properties": {
+            "openedr_source": {"type": "keyword"},
+            "openedr_schema": {"type": "integer"},
+            "openedr_event": {"type": "keyword"},
+            "openedr_event_id": {"type": "keyword"},
+            "openedr_host": {"type": "keyword", "ignore_above": 256},
+            "openedr_observed_at": {"type": "date"},
+            "openedr_pid": {"type": "long"},
+            "openedr_process": {"type": "keyword", "ignore_above": 256}
+          }
+        }
+      }
+    }
+  }
+}
