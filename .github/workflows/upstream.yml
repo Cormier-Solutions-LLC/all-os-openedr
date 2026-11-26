@@ -13,9 +13,8 @@ jobs:
     if: >-
       github.repository == 'Cormier-Solutions-LLC/all-os-openedr' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'schedule' || (github.actor == 'cormierconsulting' &&
-       github.triggering_actor == 'cormierconsulting'))
-    runs-on: ubuntu-latest
+      github.actor == 'cormierconsulting' && github.triggering_actor == 'cormierconsulting'
+    runs-on: cormier-runners
     timeout-minutes: 15
     strategy:
       fail-fast: false

@@ -104,7 +104,7 @@ jobs:
     concurrency:
       group: preview-publication-${{ needs.maintainer.outputs.version }}
       cancel-in-progress: false
-    runs-on: ubuntu-latest
+    runs-on: cormier-runners
     timeout-minutes: 15
     permissions:
       contents: write
