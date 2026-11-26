@@ -26,7 +26,7 @@ Priority: optional
 Architecture: all
 Maintainer: All OS OpenEDR maintainers <all-os-openedr@users.noreply.github.com>
 Depends: python3 (>= 3.10), init-system-helpers
-Suggests: apparmor, auditd, rsyslog, samba, samba-vfs-modules, wazuh-agent
+Suggests: apparmor, auditd, nftables, openssh-client, rsyslog, samba, samba-vfs-modules, wazuh-agent
 Description: OpenEDR endpoint detection and protection preview for Linux
  The unprivileged collector writes local JSON process observations for Wazuh.
  Opt-in policy generators support Linux Audit, AppArmor and Samba.
@@ -34,10 +34,13 @@ EOF
 install -m 0644 "$root"/all_os_openedr/*.py "$stage/usr/lib/all-os-openedr/all_os_openedr/"
 install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
     "$root/packaging/debian/all-os-openedr-apparmor-policy" \
+    "$root/packaging/debian/all-os-openedr-response" \
     "$root/packaging/debian/all-os-openedr-samba-policy" "$stage/usr/bin/"
+install -m 0750 "$root/integrations/wazuh/all-os-openedr-response" "$stage/usr/share/all-os-openedr/wazuh/"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/samba-localfile.xml" \
     "$root/integrations/wazuh/lifecycle-localfile.xml" \
+    "$root/integrations/wazuh/response-localfile.xml" \
     "$root/integrations/wazuh/openedr-samba_decoders.xml" \
     "$root/integrations/wazuh/110100-openedr_rules.xml" \
     "$root/integrations/wazuh/110114-openedr-samba_rules.xml" \

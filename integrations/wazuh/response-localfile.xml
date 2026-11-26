@@ -1,0 +1,4 @@
+<localfile>
+  <location>/var/log/all-os-openedr-response/actions.jsonl</location>
+  <log_format>json</log_format>
+</localfile>

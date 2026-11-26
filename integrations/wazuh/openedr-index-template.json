@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 2,
+  "version": 3,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -47,6 +47,14 @@
             "openedr_kernel_monotonic_ns": {"type": "long"},
             "openedr_gap_reason": {"type": "keyword"},
             "openedr_missing_events": {"type": "long"},
+            "openedr_response_action": {"type": "keyword"},
+            "openedr_response_agent": {"type": "keyword"},
+            "openedr_response_alert": {"type": "keyword"},
+            "openedr_response_signer": {"type": "keyword"},
+            "openedr_response_lease": {"type": "keyword"},
+            "openedr_response_result": {"type": "keyword"},
+            "openedr_response_reason": {"type": "keyword"},
+            "openedr_response_deadline_ms": {"type": "long"},
             "openedr_process": {"type": "keyword", "ignore_above": 256}
           }
         }
