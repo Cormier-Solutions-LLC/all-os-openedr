@@ -394,11 +394,12 @@ for mask in ("w", "a", "l", "c", "d", "wc"):
 assert not file_rule.search(f'{record} denied_mask="r" type=SYSCALL denied_mask="w"')
 assert not file_rule.search(record.replace('class="file"', 'class="net"') + ' denied_mask="w"')
 ima_rule = audit_rules.find("rule[@id='110119']")
-ima_match = re.compile(ima_rule.findtext("match"))
+ima_match = re.compile(ima_rule.findtext("match"), re.ASCII)
 ima_failure = ('type=INTEGRITY_DATA msg=audit(1795728256.146:111): pid=852 uid=0 auid=1000 ses=3 '
                'subj=unconfined op=appraise_data cause=missing-hash comm="python3" name="/srv/exec/sample" '
                'dev="vdc" ino=15 res=0 errno=0')
 assert ima_match.search(ima_failure)
+assert ima_match.search(ima_failure + '\x1dUID="root" AUID="debian"')
 assert not ima_match.search(ima_failure.replace("res=0", "res=1"))
 assert not ima_match.search(ima_failure.replace("op=appraise_data", "op=collect_data"))
 samba_feed = ElementTree.parse(integration / "samba-localfile.xml")
