@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+service=all-os-openedr
+rc-service --ifstarted "$service" stop
+for entry in /etc/runlevels/*/"$service"; do
+    [ -L "$entry" ] || continue
+    rc-update del "$service" "$(basename "$(dirname "$entry")")"
+done

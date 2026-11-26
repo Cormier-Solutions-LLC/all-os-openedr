@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+
+description="All OS OpenEDR Linux telemetry preview"
+command="/usr/bin/python3"
+command_args="-B -m all_os_openedr"
+command_user="all-os-openedr:all-os-openedr"
+directory="/usr/lib/all-os-openedr"
+supervisor="supervise-daemon"
+pidfile="/run/${RC_SVCNAME}.pid"
+no_new_privs="yes"
+umask="0027"
+respawn_delay=5
+respawn_max=5
+respawn_period=60
+
+start_pre() {
+    uid=$(id -u all-os-openedr) || return 1
+    group=$(getent group all-os-openedr) || return 1
+    gid=$(printf '%s\n' "$group" | cut -d: -f3)
+    if [ "$uid" -eq 0 ] || [ "$gid" -eq 0 ]; then
+        eerror "The all-os-openedr service account must be unprivileged"
+        return 1
+    fi
+    checkpath --directory --mode 0750 --owner "$command_user" /var/log/all-os-openedr
+}

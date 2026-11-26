@@ -65,6 +65,13 @@ jobs:
             version="$base_version-nightly.$(date -u +%Y%m%d).g${GITHUB_SHA:0:12}"
           fi
           printf 'version=%s\nchannel=%s\n' "$version" "$channel" >> "$GITHUB_OUTPUT"
+      - name: Verify Alpine package and OpenRC lifecycle
+        shell: bash
+        run: |
+          git archive HEAD LICENSE.md NOTICE.md all_os_openedr packaging/alpine scripts/check-alpine.sh |
+            docker run --rm -i \
+              alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf \
+              sh -ec 'mkdir /source; tar -xf - -C /source; sh /source/scripts/check-alpine.sh'
       - name: Verify preview
         if: steps.version.outputs.version == ''
         run: sh scripts/check-preview.sh
@@ -118,7 +125,7 @@ jobs:
           for asset in ./*; do [[ "$asset" == *"$VERSION"* ]]; done
           if grep -Eq '(^|[ /])\.\.(/|$)|  /' "SHA256SUMS-$VERSION.txt"; then exit 1; fi
           sha256sum --check "SHA256SUMS-$VERSION.txt"
-          notes="This software is subject to the terms of the Comodo Available Source License Agreement. These preview assets cover Debian and the read-only management API."
+          notes="This software is subject to the terms of the Comodo Available Source License Agreement. Preview assets include the Debian package, the read-only management API image and Helm chart, and the RPM and Alpine APK build recipes."
           if [[ "$CHANNEL" == stable ]]; then
             tag="v$VERSION"
             target_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha)

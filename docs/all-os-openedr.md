@@ -30,6 +30,26 @@ Build into an empty directory for each target so the install command selects one
 
 Rocky Linux 9 and 10 and Fedora 44 passed container build, install, upgrade, one-shot event generation, and removal checks. Run `scripts/check-rpm.sh` as root in a disposable target container to repeat those checks. Host systemd startup, SELinux enforcing behavior, Wazuh alert delivery, and the wider distribution matrix remain qualification items.
 
+## Alpine APK and OpenRC
+
+Install `alpine-sdk`, `openrc`, and `python3` on the Alpine build host. Configure `abuild` as an unprivileged builder with an operator-controlled package signing key. For a new local builder, `abuild-keygen -a -n` creates a key and configures `abuild` to use it. Install only the corresponding public key in `/etc/apk/keys/` on the trusted builder and target. Verify the public key with its owner before importing it.
+
+```sh
+sh packaging/alpine/build.sh "$(cat VERSION)" ./dist
+```
+
+Copy the signed APK to the target and install it as root. Replace `VERSION` in the filename with the build's numeric version.
+
+```sh
+apk add ./all-os-openedr-VERSION-r0.apk
+rc-service all-os-openedr start
+rc-update add all-os-openedr default
+```
+
+The service is opt-in, including at boot. After a package upgrade, run `rc-service all-os-openedr restart` to load the new code. Removing the package stops the service and removes its runlevel entries while retaining the event log and service account. The package includes `LICENSE.md` and `NOTICE.md` in `/usr/share/licenses/all-os-openedr/`.
+
+Alpine 3.23.8 and 3.24.4 passed signed APK install, upgrade, OpenRC start and restart, and removal in x86_64 containers. The service ran with no effective capabilities and wrote JSON lines to `/var/log/all-os-openedr/events.jsonl` with mode `0640`. A Wazuh 4.14.11 manager received an Alpine-generated event through a read-only shared log directory and matched rule 110101. On a shared filesystem, expose the log directory read-only to a supported Wazuh log reader and apply the JSON collection stanza below. Wazuh's [package list](https://documentation.wazuh.com/current/installation-guide/packages-list.html) currently provides DEB and RPM builds for Linux.
+
 ## Direct Wazuh ingestion and Wazah OpenSearch
 
 1. Add [the JSON localfile stanza](../integrations/wazuh/localfile.xml) to the Wazuh agent's existing `ossec_config`. Use an endpoint with an enrolled Wazuh agent and verify that the logcollector can read the protected file.
