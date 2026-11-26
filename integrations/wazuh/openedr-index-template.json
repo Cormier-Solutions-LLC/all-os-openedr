@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 4,
+  "version": 5,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -75,6 +75,15 @@
             "openedr_file_old_name_bytes": {"type": "keyword", "ignore_above": 1024},
             "openedr_file_old_path": {"type": "keyword", "ignore_above": 4096},
             "openedr_file_old_path_source": {"type": "keyword"},
+            "openedr_executable_path": {"type": "keyword", "ignore_above": 4096},
+            "openedr_executable_measurement": {"type": "keyword"},
+            "openedr_executable_size": {"type": "long"},
+            "openedr_executable_device": {"type": "keyword"},
+            "openedr_executable_inode": {"type": "keyword"},
+            "openedr_executable_sha256": {"type": "keyword"},
+            "openedr_executable_format": {"type": "keyword"},
+            "openedr_executable_catalog_sha256": {"type": "keyword"},
+            "openedr_executable_verdict": {"type": "keyword"},
             "openedr_process": {"type": "keyword", "ignore_above": 256}
           }
         }

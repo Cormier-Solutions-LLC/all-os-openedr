@@ -53,6 +53,27 @@ Add the [file provenance localfile stanza](../integrations/wazuh/file-provenance
 
 Fanotify can coalesce operations. Rows with the same notification ID share one kernel report and observation time. Use that ID when counting notifications or interpreting operation order. Full-file read and write hashing, mapped I/O coverage, and remote changes on network shares need additional sensors. [Linux fanotify event semantics](https://man7.org/linux/man-pages/man7/fanotify.7.html)
 
+### Identify files opened for execution
+
+Enable the optional executable collector for a chosen local filesystem. Select its mount root. For example, use `/` to observe executables on the root filesystem. Separate filesystems such as a separately mounted `/usr` need their own watch. The kernel supplies an open descriptor for each reported object. The collector hashes up to 32 MiB from that descriptor and records SHA-256, size, file format, filesystem device and inode, and a path when available. Actor fields include the kernel PID and, when available, a separate process snapshot from the accompanying pidfd. The service drops all effective capabilities after installing the watch. [Linux fanotify event descriptors](https://man7.org/linux/man-pages/man7/fanotify.7.html)
+
+For offline verdicts, prepare a JSON file in the following format. Replace the example digest with a verified SHA-256 from an executable you have classified. The catalog accepts lowercase 64-character hashes and the values `trusted` and `untrusted`.
+
+```json
+{"schema": 1, "verdicts": {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": "trusted"}}
+```
+
+```sh
+sudo install -o root -g root -m 0644 ./verdicts.json /etc/all-os-openedr-executable-verdicts.json
+printf 'OPENEDR_EXECUTABLE_FILESYSTEM=/\n' | sudo tee /etc/default/all-os-openedr-executable
+sudo systemctl enable --now all-os-openedr-executable.service
+sudo tail /var/log/all-os-openedr-executable/events.jsonl
+```
+
+The catalog is read once at startup. Replace the file and restart the service to apply an update. Events record the catalog SHA-256 where available. A valid catalog with no matching digest yields `unknown`. A missing or rejected catalog, a missing descriptor, a file over the limit, or a file that changes during measurement yields `unavailable`. Hashes are snapshots of the reported object when the collector reads it. The open can precede a failed launch. Compare with a `process.exec` event when successful execution matters. Interpreter reads, such as opening a script as input to `bash`, are outside the execution-open event. Local verdicts are investigation evidence. Use the separate workload policy for enforcement.
+
+Merge the [executable localfile stanza](../integrations/wazuh/executable-localfile.xml) into Wazuh and update the packaged `110100-openedr_rules.xml` on the manager. Reserve rule IDs `110107` for opens and `110108` for local untrusted matches. Queue overflow uses `110106`. Install template version 5 or add the new executable fields to existing dedicated OpenSearch index mappings before querying by digest or verdict. The collector computes verdicts locally while the Wazuh path is unavailable.
+
 ### Kernel execution detection with Wazuh
 
 On Debian 13 amd64, Linux Audit can detect a successful launch of a protected executable by a login identity other than the one you approve. Choose a real executable stored under an administrator-controlled path and use the numeric UID of the approved login account. Audit records the original login UID across privilege changes. The policy excludes processes whose login UID is unset, including many system services.
