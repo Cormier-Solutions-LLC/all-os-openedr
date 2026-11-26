@@ -192,6 +192,8 @@ Restart the service and verify a permitted launch, a denied launch, and graceful
 
 Install `bubblewrap` and `python3-seccomp` on Debian 13 amd64. Configure a dedicated unprivileged service account and use the packaged launcher as the entry point for an administrator-managed service. Set its catalog path to the administrator-owned SHA-256 catalog described above. Each launch reads the current catalog, including when Wazuh is offline. An `untrusted` entry blocks the launch. A `trusted` entry permits native execution when the file and its ancestors are administrator-controlled. An unknown ELF or a trusted ELF from a writable location goes through the isolated launch path. An unavailable catalog or failed isolation blocks execution.
 
+Keep the service arguments and native environment under administrator control. Approve native execution only for applications that load administrator-controlled code. Keep interpreters and programs that accept user-supplied code out of the native approval catalog for this service.
+
 Use a dedicated service cgroup to bound the resources of the application and its descendants. Create the root-owned log directory with `sudo install -d -m 0750 -o root -g root /var/log/all-os-openedr-containment`. Customize this example before installing and starting the unit. Stop the managed service before restoring a prior catalog or entry point.
 
 ```ini
