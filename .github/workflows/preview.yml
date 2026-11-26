@@ -100,7 +100,10 @@ jobs:
   publish:
     name: Publish preview assets
     needs: maintainer
-    if: needs.maintainer.outputs.version != ''
+    if: >-
+      github.repository == 'Cormier-Solutions-LLC/all-os-openedr' &&
+      github.actor == 'cormierconsulting' && github.triggering_actor == 'cormierconsulting' &&
+      needs.maintainer.outputs.version != ''
     concurrency:
       group: preview-publication-${{ needs.maintainer.outputs.version }}
       cancel-in-progress: false
