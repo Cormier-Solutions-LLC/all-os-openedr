@@ -153,6 +153,7 @@ assert exec_child["openedr_process_id"] == fork_child["openedr_process_id"]
 exit_child, = ingest(EXIT, 5, 300, struct.pack("=iiIIii", 201, 201, 9, 17, 200, 200), cpu=1)
 assert exit_child["openedr_wait_status"] == 9
 assert exit_child["openedr_process_id"] == fork_child["openedr_process_id"]
+assert exit_child["openedr_parent_process_id"] == fork_parent["openedr_process_id"]
 reused, = ingest(FORK, 2, 400, struct.pack("=iiii", 200, 200, 201, 201))
 assert reused["openedr_process_id"] != fork_child["openedr_process_id"]
 gap, uncorrelated = ingest(EXEC, 4, 420, struct.pack("=ii", 201, 201))
@@ -168,6 +169,11 @@ assert leader_exit["openedr_thread_group_leader"] and not worker_exit["openedr_t
 assert worker_child["openedr_parent_process_id"] == threaded["openedr_process_id"]
 assert worker_exit["openedr_process_id"] == threaded["openedr_process_id"]
 assert 300 not in tracker.processes
+old_exit, = ingest(EXIT, 6, 100, struct.pack("=iiIIii", 302, 302, 0, 17, 0, 0), cpu=1)
+old_parent, = ingest(EXIT, 7, 110, struct.pack("=iiIIii", 400, 400, 0, 17, 302, 302), cpu=1)
+assert "openedr_parent_process_id" not in old_parent
+assert "openedr_process_id" not in old_exit
+assert 302 in tracker.processes
 try:
     list(proc_records(kernel_event(EXEC, 0, 10, 480, struct.pack("=ii", 201, 201))[:-1]))
 except StreamGap:

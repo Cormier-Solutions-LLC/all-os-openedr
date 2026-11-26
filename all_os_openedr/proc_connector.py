@@ -9,6 +9,7 @@ import struct
 import time
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,13 @@ U32_MASK = (1 << 32) - 1
 
 class StreamGap(Exception):
     """Kernel data was dropped or could not be interpreted."""
+
+
+@dataclass
+class ProcessLifetime:
+    identity: str
+    birth_ns: int
+    members: set[int]
 
 
 def control_request(port, operation, nonce):
@@ -106,6 +114,12 @@ class Lifecycle:
     def identity(self, pid, stamp):
         return hashlib.sha256(f"{self.boot_id}:connector:leader:{pid}:{stamp}".encode()).hexdigest()
 
+    def process_at(self, pid, stamp):
+        process = self.processes.get(pid)
+        if process is not None and process.birth_ns <= stamp:
+            return process
+        return None
+
     def accept(self, record):
         kind, cpu, sequence, _, stamp, payload = record
         previous = self.sequences.get(cpu)
@@ -127,27 +141,30 @@ class Lifecycle:
         if kind == FORK:
             parent_tid, parent_pid, tid, pid = struct.unpack_from("=iiii", payload)
             name = "process.fork"
-        else:
+        elif kind == EXEC:
             tid, pid = struct.unpack_from("=ii", payload)
-            name = "process.exec" if kind == EXEC else "process.task_exit"
+            name = "process.exec"
+        else:
+            tid, pid, wait_status, _, parent_tid, parent_pid = struct.unpack_from("=iiIIii", payload)
+            name = "process.task_exit"
         if pid < 1 or tid < 1:
             return
         leader = pid == tid
-        parent = self.processes.get(parent_pid)
+        parent = self.process_at(parent_pid, stamp)
         if kind == FORK and leader:
-            self.processes[pid] = (self.identity(pid, stamp), {tid})
-        process = self.processes.get(pid)
+            current = self.processes.get(pid)
+            if current is None or current.birth_ns <= stamp:
+                self.processes[pid] = ProcessLifetime(self.identity(pid, stamp), stamp, {tid})
+        process = self.process_at(pid, stamp)
         if process is not None:
-            _, members = process
             if kind == FORK:
-                members.add(tid)
+                process.members.add(tid)
             elif kind == EXEC:
                 # A successful exec replaces the other threads in this group.
-                members.clear()
-                members.add(tid)
+                process.members = {tid}
             else:
-                members.discard(tid)
-                if not members:
+                process.members.discard(tid)
+                if not process.members:
                     self.processes.pop(pid)
 
         key = f"{self.boot_id}:connector:{cpu}:{sequence}:{stamp}"
@@ -161,15 +178,14 @@ class Lifecycle:
             "openedr_kernel_monotonic_ns": stamp,
         })
         if process is not None:
-            event["openedr_process_id"] = process[0]
+            event["openedr_process_id"] = process.identity
         if kind == EXIT:
-            wait_status, _, parent_tid, parent_pid = struct.unpack_from("=IIii", payload, 8)
             event["openedr_wait_status"] = wait_status
         if parent_pid > 0:
             event["openedr_parent_pid"] = parent_pid
             event["openedr_parent_tid"] = parent_tid
         if parent is not None:
-            event["openedr_parent_process_id"] = parent[0]
+            event["openedr_parent_process_id"] = parent.identity
         yield event
 
 
