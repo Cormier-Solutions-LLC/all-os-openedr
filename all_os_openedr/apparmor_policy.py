@@ -48,6 +48,7 @@ def render_profile(name, executables, libraries, reads, writes):
         "",
         f"profile {name} {{",
         "  signal (receive) set=(hup, int, quit, abrt, kill, term, cont) peer=unconfined,",
+        f"  signal (send, receive) peer={name},",
     ]
     for paths, permissions in (
         (executables, "rix"),
