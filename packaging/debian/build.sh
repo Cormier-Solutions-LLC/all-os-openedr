@@ -52,6 +52,12 @@ install -m 0644 "$root/packaging/debian/containment-decisions.bt" \
     "$stage/usr/share/all-os-openedr/containment/decisions.bt"
 install -m 0644 "$root/packaging/debian/removable-copies.bt" "$stage/usr/share/all-os-openedr/storage/"
 install -m 0644 "$root/packaging/debian/tcp-observations.bt" "$stage/usr/share/all-os-openedr/network/"
+# These hooks have different argument lists with the same skb member.
+for hook in ip_send_skb ip6_send_skb; do
+    printf 'fentry:%s\n' "$hook"
+    cat "$root/packaging/debian/dns-observations.bt.in"
+done > "$stage/usr/share/all-os-openedr/network/dns-observations.bt"
+chmod 0644 "$stage/usr/share/all-os-openedr/network/dns-observations.bt"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/health-localfile.xml" \
     "$root/integrations/wazuh/containment-localfile.xml" \
@@ -66,6 +72,7 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/removable-copies-localfile.xml" \
     "$root/integrations/wazuh/removable-storage-localfile.xml" \
     "$root/integrations/wazuh/tcp-localfile.xml" \
+    "$root/integrations/wazuh/dns-localfile.xml" \
     "$root/integrations/wazuh/response-localfile.xml" \
     "$root/integrations/wazuh/openedr-samba_decoders.xml" \
     "$root/integrations/wazuh/110100-openedr_rules.xml" \
@@ -78,6 +85,7 @@ install -m 0644 "$root/packaging/debian/all-os-openedr.service" \
     "$root/packaging/debian/all-os-openedr-removable-copies.service" \
     "$root/packaging/debian/all-os-openedr-removable-storage.service" \
     "$root/packaging/debian/all-os-openedr-tcp.service" \
+    "$root/packaging/debian/all-os-openedr-dns.service" \
     "$root/packaging/debian/all-os-openedr-containment-audit.service" \
     "$root/packaging/debian/all-os-openedr-launch.socket" \
     "$root/packaging/debian/all-os-openedr-launch@.service" \

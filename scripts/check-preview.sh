@@ -37,6 +37,7 @@ from xml.etree import ElementTree
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
+from all_os_openedr.dns_observations import DNSTrace, dns_name
 from all_os_openedr.endpoint_health import broker_health, forwarder_health, sample
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, parse_catalog, read_catalog
 from all_os_openedr.executable_policy import policy_event, update_catalog
@@ -45,6 +46,7 @@ from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, PEER, parse_policy, print_output, read_local_file, read_export, receive_snapshot, receive_message, receive_pipes, save_export, send_message, service, validate_reply
 from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
+from all_os_openedr.network_trace import MAX_ACCOUNT_EVENTS_PER_SECOND, MAX_ACTOR_EVENTS_PER_SECOND, ObservationBudget
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
@@ -53,9 +55,7 @@ from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
-from all_os_openedr.tcp_observations import (
-    MAX_ACCOUNT_EVENTS_PER_SECOND, MAX_ACTOR_EVENTS_PER_SECOND, TCPBudget, TCPTrace,
-)
+from all_os_openedr.tcp_observations import TCPTrace
 
 with TemporaryDirectory() as temporary:
     candidate = Path(temporary) / "candidate"
@@ -564,7 +564,7 @@ assert gap["openedr_gap_reason"] == "tcp_kernel_events_lost"
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110135']/field"), started["openedr_event"])
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110136']/field"), gap["openedr_event"])
 clock = [1]
-budget = TCPBudget(tcp_trace, clock=lambda: clock[0])
+budget = ObservationBudget(tcp_trace, clock=lambda: clock[0])
 for _ in range(MAX_ACTOR_EVENTS_PER_SECOND):
     assert budget.admit(started) is started
 assert budget.admit(started)["openedr_gap_reason"] == "tcp_output_rate_limit"
@@ -578,6 +578,32 @@ other_account = {**started, "openedr_file_actor_id": "new-account", "openedr_uid
 assert budget.admit(other_account) is other_account
 clock[0] += 1
 assert budget.admit(started) is started
+assert dns_name(b"\0") == "."
+assert dns_name(b"\x03A.B\x02\xff_\0") == "a\\046b.\\255_"
+assert len(dns_name((b"\x3f" + b"a" * 63) * 3 + b"\x3d" + b"b" * 61 + b"\0")) == 253
+for invalid_name in (b"", b"\x40" + b"a" * 64 + b"\0", b"\xc0\x0c", b"\x02ab", b"\0\0", b"\x01\x01"):
+    try:
+        dns_name(invalid_name)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"Accepted malformed DNS name {invalid_name!r}")
+dns_feed = ElementTree.parse(integration / "dns-localfile.xml")
+assert dns_feed.findtext("location") == "/var/log/all-os-openedr-dns/events.jsonl"
+dns_trace = DNSTrace("boot", "host", 100)
+wire_name = b"\x07ExAmPlE\x04test\0".hex(" ")
+data = f"2500000001\t1\t1234\t2000000000\t1000\t4026531840\t43210\t::1\t::1\t28\t{comm}\t{wire_name}\n"
+query = dns_trace.receive(json.dumps({"type": "printf", "data": data}))
+assert query["openedr_dns_name"] == "example.test" and query["openedr_dns_type"] == "AAAA"
+assert query["openedr_network_transport"] == "udp" and query["openedr_network_remote_port"] == 53
+assert query["openedr_file_actor_id"] == started["openedr_file_actor_id"]
+assert query["openedr_network_monotonic_ns"] == "2500000001"
+assert query["openedr_event_id"] != started["openedr_event_id"]
+gap = dns_trace.receive(json.dumps({"type": "printf", "data": "nonlinear\n"}))
+assert gap["openedr_gap_reason"] == "dns_nonlinear_question"
+assert dns_trace.receive(b'{"type":"lost_events","data":3}')["openedr_gap_reason"] == "dns_kernel_events_lost"
+assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110137']/field"), query["openedr_event"])
+assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110138']/field"), gap["openedr_event"])
 fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 8388609, "fixed-uuid", 101)
 usb_volume = Volume(Mount(52, "8:2", "/srv/USB volume", "ext4", "/dev/sdb1"), 8388610, "usb-uuid", 102, "media-id")
 transfer = TransferTrace(fixed_volume, usb_volume, "boot", "host")
@@ -1204,6 +1230,9 @@ for key, field_type in (
     ("openedr_network_local_ip", "ip"),
     ("openedr_network_remote_ip", "ip"),
     ("openedr_network_remote_port", "integer"),
+    ("openedr_network_transport", "keyword"),
+    ("openedr_dns_name", "keyword"),
+    ("openedr_dns_type", "keyword"),
     ("openedr_process_id", "keyword"),
     ("openedr_parent_process_id", "keyword"),
     ("openedr_stream_id", "keyword"),
@@ -1330,7 +1359,7 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
     "$work/package/usr/bin/all-os-openedr-executable-policy" | sh -s -- apply --help >/dev/null
 test -x "$work/package/usr/bin/all-os-openedr-health"
 for unit in all-os-openedr-health.service all-os-openedr-health.timer all-os-openedr-removable-storage.service \
-    all-os-openedr-removable-copies.service all-os-openedr-tcp.service; do
+    all-os-openedr-removable-copies.service all-os-openedr-tcp.service all-os-openedr-dns.service; do
     cmp "packaging/debian/$unit" "$work/package/usr/lib/systemd/system/$unit"
 done
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
@@ -1340,11 +1369,16 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml policy-localfile.xml \
-    removable-copies-localfile.xml removable-storage-localfile.xml tcp-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
+    removable-copies-localfile.xml removable-storage-localfile.xml tcp-localfile.xml dns-localfile.xml \
+    110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done
 cmp packaging/debian/tcp-observations.bt "$work/package/usr/share/all-os-openedr/network/tcp-observations.bt"
+dns_program="$work/package/usr/share/all-os-openedr/network/dns-observations.bt"
+grep -qx 'fentry:ip_send_skb' "$dns_program"
+grep -qx 'fentry:ip6_send_skb' "$dns_program"
+test "$(grep -c '^fentry:' "$dns_program")" -eq 2
 cmp integrations/samba/rsyslog.conf "$work/package/usr/share/all-os-openedr/samba/rsyslog.conf"
 (cd "$work/package/usr/lib/all-os-openedr" && python3 -B -m all_os_openedr --once --output "$work/packaged.jsonl")
 test -s "$work/packaged.jsonl"

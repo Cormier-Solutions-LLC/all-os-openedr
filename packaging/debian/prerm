@@ -7,11 +7,13 @@ case "$1" in
             deb-systemd-invoke stop all-os-openedr.service all-os-openedr-lifecycle.service \
                 all-os-openedr-file-provenance.service all-os-openedr-executable.service \
                 all-os-openedr-launch.socket all-os-openedr-containment-audit.service \
-                all-os-openedr-removable-storage.service all-os-openedr-removable-copies.service all-os-openedr-tcp.service
+                all-os-openedr-removable-storage.service all-os-openedr-removable-copies.service \
+                all-os-openedr-tcp.service all-os-openedr-dns.service
         fi
         deb-systemd-helper disable all-os-openedr.service all-os-openedr-lifecycle.service \
             all-os-openedr-file-provenance.service all-os-openedr-executable.service \
             all-os-openedr-launch.socket all-os-openedr-containment-audit.service all-os-openedr-health.timer \
-            all-os-openedr-removable-storage.service all-os-openedr-removable-copies.service all-os-openedr-tcp.service >/dev/null
+            all-os-openedr-removable-storage.service all-os-openedr-removable-copies.service \
+            all-os-openedr-tcp.service all-os-openedr-dns.service >/dev/null
         ;;
 esac

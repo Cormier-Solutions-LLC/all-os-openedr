@@ -1,0 +1,95 @@
+// Shared fentry body for IPv4 and IPv6 UDP after the kernel has built the datagram.
+// IPv4-mapped IPv6 sockets follow the actual IP header family.
+// Only the first question of a standard one-question A or AAAA query is emitted.
+
+{
+    $skb = args.skb;
+    $sk = $skb->sk;
+    if ((uint64)$sk == 0 || $sk->sk_protocol != 17 || pid == 0 || (uint64)curtask->mm == 0) {
+        return;
+    }
+    $network = (uint64)$skb->network_header;
+    $transport = (uint64)$skb->transport_header;
+    $tail = (uint64)$skb->tail;
+    if ($network >= $transport || $transport + 8 > $tail) {
+        return;
+    }
+    $head = (uint64)$skb->head;
+    $udp = (struct udphdr *)($head + $transport);
+    if (bswap($udp->dest) != 53) {
+        return;
+    }
+
+    // UDP header, 12-byte DNS header, at least a root label and QTYPE/QCLASS.
+    $length = (uint64)bswap($udp->len);
+    if ($length < 25) {
+        return;
+    }
+    if ($transport + 25 > $tail) {
+        printf("nonlinear\n");
+        return;
+    }
+    $dns = $head + $transport + 8;
+    // Ignore responses and nonstandard opcodes. Require exactly one question.
+    if ((*((uint8 *)($dns + 2)) & 0xf8) != 0 || bswap(*((uint16 *)($dns + 4))) != 1) {
+        return;
+    }
+    $name = $dns + 12;
+    $dns_remaining = $length - 20;
+    $linear_remaining = $tail - $transport - 20;
+    $pos = (uint64)0;
+    $end = (uint64)0;
+    while ($pos < 255 && $pos < $dns_remaining) {
+        if ($pos >= $linear_remaining) {
+            printf("nonlinear\n");
+            return;
+        }
+        $label = (uint64)*((uint8 *)($name + $pos));
+        $pos++;
+        if ($label == 0) {
+            $end = $pos;
+            break;
+        }
+        if ($label > 63) {
+            return;
+        }
+        $pos += $label;
+    }
+    if ($end == 0 || $end + 4 > $dns_remaining) {
+        return;
+    }
+    if ($end + 4 > $linear_remaining) {
+        printf("nonlinear\n");
+        return;
+    }
+    $type = bswap(*((uint16 *)($name + $end)));
+    $class = bswap(*((uint16 *)($name + $end + 2)));
+    if (($type != 1 && $type != 28) || $class != 1) {
+        return;
+    }
+    // Reload and check the terminator to give the Debian verifier an unsigned byte bound.
+    $last = (uint64)*((uint8 *)($name + $end - 1));
+    $bytes = ($end + $last) & 255;
+    if ($bytes != $end) {
+        return;
+    }
+
+    $stamp = nsecs(monotonic);
+    $ns = $sk->__sk_common.skc_net.net->ns.inum;
+    $born = curtask->group_leader->start_boottime;
+    $comm = buf(curtask->group_leader->comm, 16);
+    $version = *((uint8 *)($head + $network)) >> 4;
+    $source = bswap($udp->source);
+    if ($version == 4 && $transport - $network >= 20) {
+        $ip = (struct iphdr *)($head + $network);
+        printf("%llu\t%u\t%u\t%llu\t%u\t%u\t%u\t%s\t%s\t%u\t%rh\t%rh\n",
+            $stamp, cpu, pid, $born, uid, $ns, $source, ntop($ip->saddr), ntop($ip->daddr),
+            $type, $comm, buf((void *)$name, $bytes));
+    } else if ($version == 6 && $transport - $network >= 40) {
+        $ip6 = (struct ipv6hdr *)($head + $network);
+        printf("%llu\t%u\t%u\t%llu\t%u\t%u\t%u\t%s\t%s\t%u\t%rh\t%rh\n",
+            $stamp, cpu, pid, $born, uid, $ns, $source,
+            ntop(10, $ip6->saddr.in6_u.u6_addr8), ntop(10, $ip6->daddr.in6_u.u6_addr8),
+            $type, $comm, buf((void *)$name, $bytes));
+    }
+}

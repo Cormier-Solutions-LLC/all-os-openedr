@@ -49,9 +49,25 @@ The sensor records IPv4 and IPv6 TCP connect attempts that reach the kernel tran
 
 Use the Wazuh agent ID, boot ID, and `openedr_network_socket_id` to reconstruct a socket's timeline. Use `openedr_network_monotonic_ns` for event ordering and `openedr_network_namespace` to distinguish network namespaces. Match `openedr_file_actor_id` within the same agent and boot to join socket activity to file provenance. The process name is the group leader's kernel task name at capture time.
 
-The service tracks socket activity observed after it starts. A listening socket can outlive the process that called listen, and an accepted socket may have lost its peer before acceptance. Early connect failures that never enter TCP transmission, UDP, DNS, and application protocol metadata remain outside this preview. The sensor reads endpoint metadata without accessing packet payloads, including during encrypted TCP connections. [Linux TCP state handling](https://raw.githubusercontent.com/torvalds/linux/v6.12/net/ipv4/tcp.c) · [Debian bpftrace](https://manpages.debian.org/trixie/bpftrace/bpftrace.8.en.html)
+The service tracks socket activity observed after it starts. A listening socket can outlive the process that called listen, and an accepted socket may have lost its peer before acceptance. Early connect failures that never enter TCP transmission are outside this sensor's coverage. The sensor reads endpoint metadata without accessing packet payloads, including during encrypted TCP connections. [Linux TCP state handling](https://raw.githubusercontent.com/torvalds/linux/v6.12/net/ipv4/tcp.c) · [Debian bpftrace](https://manpages.debian.org/trixie/bpftrace/bpftrace.8.en.html)
 
 Add the packaged `tcp-localfile.xml` to the endpoint and update `110100-openedr_rules.xml` on the Wazuh manager. Rule `110135` records TCP activity and rule `110136` reports detected evidence gaps. Apply OpenSearch template version 20 to new dedicated indices or add its TCP fields to active mappings. The local log holds a current 16 MiB file and three backups. Output is capped per process lifetime at 32 records per second, per Linux user at 64, and per endpoint at 128. The service reports detected buffer loss, socket tracking capacity, and output rate limits. Verify that your log collector follows the active file after rotation. [Wazuh localfile reference](https://documentation.wazuh.com/current/user-manual/reference/ossec-conf/localfile.html)
+
+### Investigate outbound DNS questions
+
+Enable the optional DNS sensor on Debian 13 amd64 with a standard BTF-enabled kernel and `bpftrace`. Run it in the host PID and time namespaces.
+
+~~~sh
+sudo apt install bpftrace
+sudo systemctl enable --now all-os-openedr-dns.service
+sudo tail /var/log/all-os-openedr-dns/events.jsonl
+~~~
+
+The kernel sensor observes standard single-question A and AAAA requests sent to UDP port 53 on IPv4 and IPv6. It records the question name, type, resolver address, source endpoint, network namespace, and the transmitting process's lifetime ID. The kernel passes only the question name and type to the collector and the event contains no response, DNS transaction ID, or EDNS record. Unusual label bytes are represented with three-digit decimal escapes. Review access to DNS evidence because question names can reveal internal services.
+
+A client sending to a local stub and the stub sending upstream produce separate observations with the identity of the sender on each leg. Use the endpoint, boot, namespace, timestamps, and resolver addresses to reconstruct the observed activity. A cache hit that produces a new client-to-stub datagram still has a client record. Cache hits and resolver APIs that generate no UDP request have no DNS question record. TCP fallback and encrypted DNS can produce connection evidence through the TCP service. The DNS sensor covers application-owned resolvers when they send the supported UDP requests. [DNS wire format](https://www.rfc-editor.org/rfc/rfc1035.html) · [DNS question count](https://www.rfc-editor.org/rfc/rfc9619.html)
+
+Merge the packaged `dns-localfile.xml` into the Wazuh agent and update `110100-openedr_rules.xml` on the manager. Rule `110137` reports questions and rule `110138` reports detected gaps. Apply OpenSearch template version 21 to new dedicated indices or add its DNS fields to current mappings. The DNS service uses the same retention and output quotas as the TCP service, with a separate log and budget.
 
 ### Trace file activity on a mounted filesystem
 
