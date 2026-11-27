@@ -36,11 +36,12 @@ from xml.etree import ElementTree
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
+from all_os_openedr.endpoint_health import broker_health, forwarder_health, sample
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
-from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, parse_policy, print_output, read_local_file, read_export, receive_snapshot, receive_message, receive_pipes, save_export, send_message, service, validate_reply
+from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, PEER, parse_policy, print_output, read_local_file, read_export, receive_snapshot, receive_message, receive_pipes, save_export, send_message, service, validate_reply
 from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -893,10 +894,52 @@ with peer, worker:
         pass
     else:
         raise AssertionError("An oversized launch request was accepted")
+health_report = {"broker": "ready", "ima": "enforcing"}
+with patch("all_os_openedr.launch_broker.receive_message", return_value={"health": True}), \
+        patch("all_os_openedr.launch_broker.send_message") as send, \
+        patch("all_os_openedr.launch_broker.emit"), \
+        patch("all_os_openedr.launch_broker.probe_broker", return_value=health_report) as probe:
+    service(SimpleNamespace(getsockopt=lambda *_: PEER.pack(100, 1000, 1000)))
+    assert send.call_args.args[1]["reason"] == "request_not_authorized"
+    probe.assert_not_called()
+    service(SimpleNamespace(getsockopt=lambda *_: PEER.pack(100, 0, 0)))
+    assert send.call_args.args[1] == health_report
+    probe.assert_called_once_with()
+with patch("all_os_openedr.endpoint_health.socket.socket") as client, \
+        patch("all_os_openedr.endpoint_health.receive_message") as receive:
+    connection = client.return_value.__enter__.return_value
+    connection.getsockopt.return_value = PEER.pack(1, 1000, 1000)
+    assert broker_health() == ("broker_peer_untrusted", "unknown")
+    receive.assert_not_called()
+    connection.getsockopt.return_value = PEER.pack(1, 0, 0)
+    receive.return_value = {"broker": [], "ima": "enforcing"}
+    assert broker_health() == ("broker_protocol_error", "unknown")
+with TemporaryDirectory() as temporary:
+    state_file = Path(temporary) / "wazuh-agentd.state"
+    state_file.write_bytes(b"status='connected'\n")
+    with patch("all_os_openedr.endpoint_health.WAZUH_STATE", state_file), \
+            patch("all_os_openedr.endpoint_health.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=os.getuid())), \
+            patch("all_os_openedr.endpoint_health.time.time", return_value=state_file.stat().st_mtime + 31):
+        assert forwarder_health() == "state_stale"
+        os.utime(state_file, (state_file.stat().st_mtime + 20,) * 2)
+        assert forwarder_health() == "connected"
+        state_file.chmod(0o666)
+        assert forwarder_health() == "state_invalid"
+with patch("all_os_openedr.endpoint_health.broker_health", return_value=("ready", "enforcing")), \
+        patch("all_os_openedr.endpoint_health.forwarder_health", side_effect=("disconnected", "connected")):
+    degraded = sample()
+    assert degraded["openedr_health_status"] == "degraded" and degraded["openedr_health_ima"] == "enforcing"
+    assert sample()["openedr_health_status"] == "ready"
 containment = ElementTree.parse(integration / "containment-localfile.xml")
 assert containment.findtext("location") == "/var/log/all-os-openedr-containment/launches.jsonl"
 assert containment.findtext("log_format") == "json"
 launch_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
+assert re.fullmatch(launch_rules.findtext("rule[@id='110127']/field"), degraded["openedr_event"])
+assert re.fullmatch(launch_rules.findtext("rule[@id='110128']/field"), degraded["openedr_health_status"])
+assert launch_rules.findtext("rule[@id='110128']/if_sid") == "110127"
+health_feed = ElementTree.parse(integration / "health-localfile.xml")
+assert health_feed.findtext("location") == "/var/log/all-os-openedr-health/checks.jsonl"
+assert health_feed.findtext("log_format") == "json"
 assert launch_rules.find("rule[@id='110120']/field").attrib["name"] == "openedr_event"
 assert launch_rules.findtext("rule[@id='110121']/if_sid") == "110120"
 assert launch_rules.findtext("rule[@id='110122']/if_sid") == "110120"
@@ -935,6 +978,10 @@ for key, field_type in (
     ("openedr_response_process_boot_id", "keyword"),
     ("openedr_response_process_actor_id", "keyword"),
     ("openedr_response_process_unit", "keyword"),
+    ("openedr_health_status", "keyword"),
+    ("openedr_health_broker", "keyword"),
+    ("openedr_health_ima", "keyword"),
+    ("openedr_health_forwarder", "keyword"),
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),
@@ -1011,11 +1058,17 @@ test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-ima-audit"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
+test -x "$work/package/usr/bin/all-os-openedr-health"
+for unit in all-os-openedr-health.service all-os-openedr-health.timer; do
+    cmp "packaging/debian/$unit" "$work/package/usr/lib/systemd/system/$unit"
+done
+sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
+    "$work/package/usr/bin/all-os-openedr-health" | sh -s -- --help >/dev/null
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
     "$work/package/usr/bin/all-os-openedr-response" | sh -s -- sign --help >/dev/null
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
-    lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml \
+    lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml \
     110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"

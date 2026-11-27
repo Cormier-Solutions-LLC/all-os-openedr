@@ -11,6 +11,7 @@ import select
 import socket
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,9 +23,12 @@ from types import SimpleNamespace
 
 from .apparmor_policy import trusted_file
 from .containment import (
-    IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_download, launch_event, valid_runtime_libraries,
+    IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_download, launch_event, sandbox,
+    valid_runtime_libraries,
 )
-from .executable import MAX_EXECUTABLE_SIZE, file_version
+from .executable import MAX_EXECUTABLE_SIZE, file_version, read_catalog
+from .ima_policy import select_filesystem
+from .ima_probe import check_ima
 from .sandbox_audit import start_audit_session
 
 
@@ -42,6 +46,18 @@ DOWNLOAD_TIMEOUT = 15
 PEER = struct.Struct("=iII")
 IO_READY = {"ready_for_io": True}
 IO_OPTIONS = ("interactive", "document", "export")
+HEALTH_CANARY = br"""#!/bin/sh
+[ ! -e /etc/passwd ] || exit 2
+printf 'probe\n' > /tmp/openedr-health || exit 3
+read marker < /tmp/openedr-health || exit 4
+[ "$marker" = probe ] || exit 5
+exit 37
+"""
+HEALTH_RESULTS = frozenset({
+    "ready", "policy_invalid", "catalog_invalid", "execution_volume_unavailable", "execution_volume_mismatch",
+    "sandbox_backend_unavailable", "sandbox_filter_unavailable", "sandbox_timeout", "sandbox_failed",
+    "runtime_unavailable", "canary_failed",
+})
 
 
 def receive_message(connection, timeout):
@@ -245,6 +261,36 @@ def read_policy():
     return parse_policy(json.loads(data))
 
 
+def probe_broker():
+    try:
+        filesystem, volume, catalog, _, _ = read_policy()
+    except (OSError, ValueError, RuntimeError):
+        return {"broker": "policy_invalid", "ima": "unknown"}
+    ima = "execution_volume_unconfigured"
+    if filesystem is not None:
+        try:
+            root, device, identity = select_filesystem(filesystem)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            return {"broker": "execution_volume_unavailable", "ima": "execution_volume_unavailable"}
+        if str(identity) != volume:
+            return {"broker": "execution_volume_mismatch", "ima": "execution_volume_unavailable"}
+        ima = check_ima(root, device)
+    if read_catalog(catalog)[0] is None:
+        return {"broker": "catalog_invalid", "ima": ima}
+    try:
+        descriptor = os.memfd_create("openedr-health", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
+        with os.fdopen(descriptor, "w+b") as snapshot:
+            snapshot.write(HEALTH_CANARY)
+            code, reason, pid = sandbox(snapshot, (), 6, ("dash", ()), lambda _: None)
+    except (OSError, ValueError, RuntimeError):
+        return {"broker": "runtime_unavailable", "ima": ima}
+    if pid is None:
+        broker = reason if reason in HEALTH_RESULTS else "runtime_unavailable"
+    else:
+        broker = "ready" if reason == "isolated" and code == 37 else "canary_failed"
+    return {"broker": broker, "ima": ima}
+
+
 def service(connection):
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     event = launch_event()
@@ -266,6 +312,12 @@ def service(connection):
         return
     if not isinstance(request, dict):
         block("invalid_request")
+        return
+    if request.keys() == {"health"} and request["health"] is True:
+        if uid != 0:
+            block("request_not_authorized")
+        else:
+            send_message(connection, probe_broker())
         return
     download = "download" in request
     name = request.get("application")

@@ -34,6 +34,7 @@ Description: OpenEDR endpoint detection and protection preview for Linux
 EOF
 install -m 0644 "$root"/all_os_openedr/*.py "$stage/usr/lib/all-os-openedr/all_os_openedr/"
 install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
+    "$root/packaging/debian/all-os-openedr-health" \
     "$root/packaging/debian/all-os-openedr-ima" \
     "$root/packaging/debian/all-os-openedr-launch" \
     "$root/packaging/debian/all-os-openedr-run" \
@@ -48,6 +49,7 @@ install -m 0755 "$root/packaging/debian/all-os-openedr-ima-audit" \
 install -m 0644 "$root/packaging/debian/containment-decisions.bt" \
     "$stage/usr/share/all-os-openedr/containment/decisions.bt"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
+    "$root/integrations/wazuh/health-localfile.xml" \
     "$root/integrations/wazuh/containment-localfile.xml" \
     "$root/integrations/wazuh/containment-audit-localfile.xml" \
     "$root/integrations/wazuh/ima-dispatch.conf" \
@@ -63,6 +65,8 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/110110-openedr-execution_rules.xml" "$stage/usr/share/all-os-openedr/wazuh/"
 install -m 0644 "$root/integrations/samba/rsyslog.conf" "$stage/usr/share/all-os-openedr/samba/"
 install -m 0644 "$root/packaging/debian/all-os-openedr.service" \
+    "$root/packaging/debian/all-os-openedr-health.service" \
+    "$root/packaging/debian/all-os-openedr-health.timer" \
     "$root/packaging/debian/all-os-openedr-containment-audit.service" \
     "$root/packaging/debian/all-os-openedr-launch.socket" \
     "$root/packaging/debian/all-os-openedr-launch@.service" \

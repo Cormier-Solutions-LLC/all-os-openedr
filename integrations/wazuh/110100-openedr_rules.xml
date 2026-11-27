@@ -46,6 +46,20 @@
     <options>no_full_log</options>
     <group>openedr_response,</group>
   </rule>
+  <rule id="110127" level="3">
+    <if_sid>110100</if_sid>
+    <field name="openedr_event" type="pcre2">^endpoint\.protection_health$</field>
+    <description>All OS OpenEDR endpoint protection health sample</description>
+    <options>no_full_log</options>
+    <group>openedr_sensor_health,</group>
+  </rule>
+  <rule id="110128" level="8">
+    <if_sid>110127</if_sid>
+    <field name="openedr_health_status" type="pcre2">^degraded$</field>
+    <description>All OS OpenEDR endpoint protection or forwarding is degraded</description>
+    <options>no_full_log</options>
+    <group>openedr_sensor_health,</group>
+  </rule>
   <rule id="110105" level="3">
     <if_sid>110100</if_sid>
     <field name="openedr_event" type="pcre2">^file\.(access|modify|metadata_change|close_write|close_readonly|open|create|delete|open_exec|rename)$</field>
