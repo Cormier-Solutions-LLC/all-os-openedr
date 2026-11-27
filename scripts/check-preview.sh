@@ -40,7 +40,7 @@ from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspe
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
-from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, parse_policy, print_output, read_document, read_export, receive_document, receive_message, receive_pipes, save_export, send_message, service, validate_reply
+from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, parse_policy, print_output, read_local_file, read_export, receive_snapshot, receive_message, receive_pipes, save_export, send_message, service, validate_reply
 from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -639,7 +639,16 @@ policy = {
     "catalog": "/etc/verdicts.json",
     "applications": {"fixture": {"program": "tools/fixture", "uids": [1000], "arguments": ["fixed"]}},
 }
-assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"])
+assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"], [])
+download_policy = {"schema": 1, "catalog": "/etc/verdicts.json", "download_uids": [1000]}
+assert parse_policy(download_policy) == (None, None, "/etc/verdicts.json", {}, [1000])
+for invalid in ({"download_uids": [True]}, {"download_uids": [0]}, {"filesystem": "/srv/execution"}):
+    try:
+        parse_policy({**download_policy, **invalid})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Accepted invalid download policy")
 for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]},
                {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}, {"export": 1}):
     application = {**policy["applications"]["fixture"], **fields}
@@ -652,12 +661,12 @@ for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True
 with TemporaryDirectory() as directory:
     selected = Path(directory) / "selected document"
     selected.write_bytes(b"example\0document\xff")
-    assert read_document(selected) == b"example\0document\xff"
+    assert read_local_file(selected, DOCUMENT_LIMIT) == b"example\0document\xff"
     with selected.open("wb") as stream:
         stream.truncate(DOCUMENT_LIMIT + 1)
     for invalid in (selected, Path("/dev/zero")):
         try:
-            read_document(invalid)
+            read_local_file(invalid, DOCUMENT_LIMIT)
         except ValueError:
             pass
         else:
@@ -668,15 +677,15 @@ for payload in (b"", b"example\0document\xff"):
         stack.enter_context(peer)
         stack.enter_context(worker)
         peer.sendall(DOCUMENT_LENGTH.pack(len(payload)) + payload)
-        with receive_document(worker) as snapshot:
-            assert os.pread(snapshot, len(payload) + 1, 0) == payload
-            assert fcntl.fcntl(snapshot, fcntl.F_GET_SEALS) & IMMUTABLE_SEALS == IMMUTABLE_SEALS
+        with receive_snapshot(worker, limit=DOCUMENT_LIMIT, name="test-document", timeout=3) as snapshot:
+            assert snapshot.read() == payload
+            assert fcntl.fcntl(snapshot.fileno(), fcntl.F_GET_SEALS) & IMMUTABLE_SEALS == IMMUTABLE_SEALS
         for invalid in (DOCUMENT_LENGTH.pack(DOCUMENT_LIMIT + 1), DOCUMENT_LENGTH.pack(1)):
             peer.sendall(invalid)
             if invalid == DOCUMENT_LENGTH.pack(1):
                 peer.shutdown(socket.SHUT_WR)
             try:
-                with receive_document(worker):
+                with receive_snapshot(worker, limit=DOCUMENT_LIMIT, name="test-document", timeout=3):
                     raise AssertionError("Accepted oversized or truncated document upload")
             except ValueError:
                 pass
@@ -759,13 +768,22 @@ with peer, worker:
 peer, worker = socket.socketpair()
 with peer, worker:
     send_message(peer, {"application": "fixture"})
-    empty_policy = (*parse_policy(policy)[:3], {})
+    empty_policy = (*parse_policy(policy)[:3], {}, [])
     with patch("all_os_openedr.launch_broker.read_policy", return_value=empty_policy), \
             patch("all_os_openedr.launch_broker.emit") as emit, patch("all_os_openedr.launch_broker.launch") as launch_app:
         service(worker)
         assert receive_message(peer, 1)["reason"] == "request_not_authorized"
         assert emit.call_args.args[0]["openedr_requester_uid"] == os.getuid()
         launch_app.assert_not_called()
+for request in ({"download": "path"}, {"download": True, "application": "fixture"},
+                {"download": True, "export": True}, {"download": True, "path": "/host/file"}):
+    peer, worker = socket.socketpair()
+    with peer, worker:
+        send_message(peer, request)
+        with patch("all_os_openedr.launch_broker.emit"), patch("all_os_openedr.launch_broker.read_policy") as read:
+            service(worker)
+            assert receive_message(peer, 1)["reason"] == "invalid_request"
+            read.assert_not_called()
 peer, worker = socket.socketpair()
 with peer, worker:
     peer.sendall(b" " * MAX_MESSAGE + b"\n")
@@ -870,6 +888,7 @@ test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-ima"
 test -x "$work/package/usr/bin/all-os-openedr-launch"
 test -x "$work/package/usr/bin/all-os-openedr-run"
+test -f "$work/package/usr/share/applications/all-os-openedr-contain-download.desktop"
 test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-launch-broker"
 test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-containment-audit"
 cmp packaging/debian/containment-decisions.bt \

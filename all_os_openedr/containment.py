@@ -191,7 +191,8 @@ def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, d
     snapshot.flush()
     snapshot.seek(0)
     fd = snapshot.fileno()
-    fcntl.fcntl(fd, fcntl.F_ADD_SEALS, IMMUTABLE_SEALS)
+    if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & IMMUTABLE_SEALS != IMMUTABLE_SEALS:
+        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, IMMUTABLE_SEALS)
     status_fd = os.memfd_create("openedr-sandbox-status", os.MFD_CLOEXEC | MEMFD_NOEXEC)
     with os.fdopen(status_fd, "rb") as status, os.fdopen(
         os.memfd_create("openedr-sandbox-filter", os.MFD_CLOEXEC | MEMFD_NOEXEC), "w+b",
@@ -294,6 +295,90 @@ def emit(event, decision, reason, **details):
     })
 
 
+def load_launch_catalog(path, event, report):
+    try:
+        catalog = Path(path).resolve(strict=True)
+        trusted_file(catalog)
+        catalog_id, verdicts = read_catalog(catalog)
+    except (OSError, RuntimeError, ValueError):
+        catalog_id, verdicts = None, {}
+    if catalog_id is None:
+        report(event, "blocked", "catalog_unavailable")
+        return None
+    event["openedr_executable_catalog_sha256"] = catalog_id
+    return verdicts
+
+
+def check_verdict(event, verdicts, report, *, path=None):
+    digest = event.get("openedr_executable_sha256")
+    kind = event.get("openedr_executable_format")
+    if digest is None or kind not in ("elf", "script"):
+        report(event, "blocked", "unsupported_program")
+        return False
+    if path is not None and kind == "elf" and not os.access(path, os.X_OK):
+        report(event, "blocked", "file_not_executable")
+        return False
+    verdict = verdicts.get(digest, "unknown")
+    event["openedr_executable_verdict"] = verdict
+    if verdict == "untrusted":
+        report(event, "blocked", "catalog_denied")
+        return False
+    return True
+
+
+def contain_snapshot(snapshot, options, event, report, *, delegated, streams=None, document=None, export=None,
+                     cancelled=None):
+    script = None
+    if event["openedr_executable_format"] == "script":
+        script = script_shell(snapshot) if platform.machine() == "x86_64" else None
+        if script is None:
+            report(event, "blocked", "unsupported_interpreter")
+            return LAUNCH_FAILED
+        event["openedr_containment_interpreter"] = script[0]
+    creation = {}
+
+    def on_created(identity):
+        creation.update(identity)
+        write_record({
+            **event, **identity,
+            "openedr_event": "executable.sandbox_created",
+            "openedr_event_id": uuid.uuid4().hex,
+        })
+
+    exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created,
+                                      streams=streams, document=document, export=export, cancelled=cancelled)
+    details = {**creation, "openedr_containment_exit_code": exit_code}
+    if pid is not None:
+        details["openedr_containment_pid"] = pid
+        if event["openedr_executable_verdict"] == "unknown":
+            reason = "catalog_unknown"
+        elif delegated:
+            reason = "delegated_launch"
+        else:
+            reason = "script_requires_isolation" if script is not None else "unmanaged_location"
+        report(event, "isolated", reason, **details)
+    else:
+        report(event, "blocked", outcome, **details)
+    return exit_code
+
+
+def launch_download(snapshot, options, event, *, reporter, streams=None, cancelled=None):
+    fd = snapshot.fileno()
+    if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & IMMUTABLE_SEALS != IMMUTABLE_SEALS:
+        reporter(event, "blocked", "invalid_download")
+        return LAUNCH_FAILED
+    verdicts = load_launch_catalog(options.catalog, event, reporter)
+    if verdicts is None:
+        return LAUNCH_FAILED
+    evidence = inspect_descriptor(fd)
+    for field in ("openedr_executable_path", "openedr_executable_device", "openedr_executable_inode"):
+        evidence.pop(field, None)
+    event.update(evidence)
+    if not check_verdict(event, verdicts, reporter):
+        return LAUNCH_FAILED
+    return contain_snapshot(snapshot, options, event, reporter, delegated=True, streams=streams, cancelled=cancelled)
+
+
 def launch(options, event, *, delegated=False, reporter=None, streams=None, document=None, export=None, cancelled=None):
     report = reporter or emit
     volume_device = None
@@ -312,16 +397,9 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, docu
             report(event, "blocked", "execution_volume_mismatch")
             return LAUNCH_FAILED
         volume_device = device
-    try:
-        catalog = Path(options.catalog).resolve(strict=True)
-        trusted_file(catalog)
-        catalog_id, verdicts = read_catalog(catalog)
-    except (OSError, RuntimeError, ValueError):
-        catalog_id, verdicts = None, {}
-    if catalog_id is None:
-        report(event, "blocked", "catalog_unavailable")
+    verdicts = load_launch_catalog(options.catalog, event, report)
+    if verdicts is None:
         return LAUNCH_FAILED
-    event["openedr_executable_catalog_sha256"] = catalog_id
     path = Path(options.program).resolve(strict=True)
     if volume_device is not None and not path.is_relative_to(root):
         report(event, "blocked", "execution_volume_mismatch")
@@ -346,30 +424,13 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, docu
         copy_fd = os.memfd_create("openedr-program", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
         with os.fdopen(copy_fd, "w+b") as snapshot:
             event.update(inspect_descriptor(fd, snapshot=snapshot))
-            digest = event.get("openedr_executable_sha256")
-            kind = event.get("openedr_executable_format")
-            if digest is None or kind not in ("elf", "script"):
-                report(event, "blocked", "unsupported_program")
+            if not check_verdict(event, verdicts, report, path=path):
                 return LAUNCH_FAILED
-            if kind == "elf" and not os.access(path, os.X_OK):
-                report(event, "blocked", "file_not_executable")
-                return LAUNCH_FAILED
-            verdict = verdicts.get(digest, "unknown")
-            event["openedr_executable_verdict"] = verdict
-            if verdict == "untrusted":
-                report(event, "blocked", "catalog_denied")
-                return LAUNCH_FAILED
-            script = None
-            if kind == "script":
-                script = script_shell(snapshot) if platform.machine() == "x86_64" else None
-                if script is None:
-                    report(event, "blocked", "unsupported_interpreter")
-                    return LAUNCH_FAILED
-                event["openedr_containment_interpreter"] = script[0]
-            if (not delegated and document is None and export is None and script is None and verdict == "trusted"
+            if (not delegated and document is None and export is None and event["openedr_executable_format"] == "elf"
+                    and event["openedr_executable_verdict"] == "trusted"
                     and trusted_location(path, metadata)
                     and file_version(metadata) == file_version(os.fstat(fd))):
-                if volume_device is not None and not has_volume_approval(fd, digest):
+                if volume_device is not None and not has_volume_approval(fd, event["openedr_executable_sha256"]):
                     report(event, "blocked", "ima_approval_missing")
                     return LAUNCH_FAILED
                 report(event, "approved", "catalog_trusted")
@@ -378,31 +439,8 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, docu
                 except OSError:
                     report({**event, "openedr_event_id": uuid.uuid4().hex}, "blocked", "native_exec_failed")
                     return LAUNCH_FAILED
-            creation = {}
-
-            def on_created(identity):
-                creation.update(identity)
-                write_record({
-                    **event, **identity,
-                    "openedr_event": "executable.sandbox_created",
-                    "openedr_event_id": uuid.uuid4().hex,
-                })
-
-            exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created,
-                                              streams=streams, document=document, export=export, cancelled=cancelled)
-            details = {**creation, "openedr_containment_exit_code": exit_code}
-            if pid is not None:
-                details["openedr_containment_pid"] = pid
-                if verdict == "unknown":
-                    reason = "catalog_unknown"
-                elif delegated:
-                    reason = "delegated_launch"
-                else:
-                    reason = "script_requires_isolation" if script is not None else "unmanaged_location"
-                report(event, "isolated", reason, **details)
-            else:
-                report(event, "blocked", outcome, **details)
-            return exit_code
+            return contain_snapshot(snapshot, options, event, report, delegated=delegated, streams=streams,
+                                    document=document, export=export, cancelled=cancelled)
 
 
 def launch_event(program=None):
