@@ -53,7 +53,9 @@ from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
-from all_os_openedr.tcp_observations import TCPTrace
+from all_os_openedr.tcp_observations import (
+    MAX_ACCOUNT_EVENTS_PER_SECOND, MAX_ACTOR_EVENTS_PER_SECOND, TCPBudget, TCPTrace,
+)
 
 with TemporaryDirectory() as temporary:
     candidate = Path(temporary) / "candidate"
@@ -532,7 +534,7 @@ comm = b"fixture\xff".ljust(16, b"\0").hex(" ")
 tuple6 = "4026531840 43210 443 ::1 ::1"
 
 def tcp_record(phase, stamp, direction=1, addresses=tuple6):
-    data = f"{phase} 2500000000 1 {stamp} 1234 2000000000 {direction} {comm} {addresses}\n"
+    data = f"{phase} 2500000000 1 {stamp} 1234 2000000000 {direction} {comm} {addresses} 1000\n"
     return tcp_trace.receive(json.dumps({"type": "printf", "data": data}))
 
 started = tcp_record(1, 2500000001)
@@ -544,6 +546,7 @@ assert started["openedr_network_direction"] == "outbound"
 assert started["openedr_file_actor_id"] == hashlib.sha256(b"boot:1234:200").hexdigest()
 assert started["openedr_network_namespace"] == "4026531840"
 assert started["openedr_network_monotonic_ns"] == "2500000001"
+assert started["openedr_uid"] == "1000"
 assert started["openedr_network_ip_version"] == 6 and started["openedr_network_remote_port"] == 443
 assert started["openedr_process"] == "fixture\\xff"
 listening = tcp_record(4, 2500000001, 3, "4026531840 443 0 0.0.0.0 0.0.0.0")
@@ -560,6 +563,21 @@ gap = tcp_trace.receive(b'{"type":"lost_events","data":3}')
 assert gap["openedr_gap_reason"] == "tcp_kernel_events_lost"
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110135']/field"), started["openedr_event"])
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110136']/field"), gap["openedr_event"])
+clock = [1]
+budget = TCPBudget(tcp_trace, clock=lambda: clock[0])
+for _ in range(MAX_ACTOR_EVENTS_PER_SECOND):
+    assert budget.admit(started) is started
+assert budget.admit(started)["openedr_gap_reason"] == "tcp_output_rate_limit"
+assert budget.admit(started) is None
+assert budget.admit(gap) is gap and budget.admit(gap) is None
+for index in range(MAX_ACCOUNT_EVENTS_PER_SECOND - MAX_ACTOR_EVENTS_PER_SECOND):
+    other_actor = {**started, "openedr_file_actor_id": f"peer-{index}"}
+    assert budget.admit(other_actor) is other_actor
+assert budget.admit({**started, "openedr_file_actor_id": "over-account"}) is None
+other_account = {**started, "openedr_file_actor_id": "new-account", "openedr_uid": "1001"}
+assert budget.admit(other_account) is other_account
+clock[0] += 1
+assert budget.admit(started) is started
 fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 8388609, "fixed-uuid", 101)
 usb_volume = Volume(Mount(52, "8:2", "/srv/USB volume", "ext4", "/dev/sdb1"), 8388610, "usb-uuid", 102, "media-id")
 transfer = TransferTrace(fixed_volume, usb_volume, "boot", "host")

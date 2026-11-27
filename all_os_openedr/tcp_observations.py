@@ -21,6 +21,8 @@ PROGRAM = "/usr/share/all-os-openedr/network/tcp-observations.bt"
 OUTPUT = Path("/var/log/all-os-openedr-tcp/events.jsonl")
 MAX_RECORD = 2048
 MAX_EVENTS_PER_SECOND = 128
+MAX_ACCOUNT_EVENTS_PER_SECOND = 64
+MAX_ACTOR_EVENTS_PER_SECOND = 32
 LOG_MAX_BYTES = 16 * 1024 * 1024
 LOG_BACKUPS = 3
 DIRECTIONS = {1: "outbound", 2: "inbound", 3: "listener"}
@@ -77,21 +79,22 @@ class TCPTrace:
 
     def parse(self, data):
         fields = data.split()
-        if len(fields) != 28:
+        if len(fields) != 29:
             raise ValueError("Unexpected TCP trace field count")
         phase_code, first_seen, cpu, stamp, pid, born, direction = fields[:7]
-        netns, local, remote, source, target = fields[-5:]
-        first_seen, cpu, stamp, pid, born, direction, netns, local, remote = map(
-            int, (first_seen, cpu, stamp, pid, born, direction, netns, local, remote),
+        netns, local, remote, source, target, uid = fields[-6:]
+        first_seen, cpu, stamp, pid, born, direction, netns, local, remote, uid = map(
+            int, (first_seen, cpu, stamp, pid, born, direction, netns, local, remote, uid),
         )
         phase = PHASES.get(phase_code)
         local_address, remote_address = ipaddress.ip_address(source), ipaddress.ip_address(target)
-        raw_comm = bytes.fromhex("".join(fields[7:-5]))
+        raw_comm = bytes.fromhex("".join(fields[7:-6]))
         if (
             direction not in PHASE_DIRECTIONS.get(phase, ())
             or min(first_seen, pid, netns) <= 0
             or stamp < first_seen
             or min(cpu, born) < 0
+            or not 0 <= uid <= 0xffffffff
             or len(raw_comm) != 16
             or local_address.version != remote_address.version
             or not 1 <= local <= 65535
@@ -112,6 +115,7 @@ class TCPTrace:
             "openedr_network_local_ip": str(local_address),
             "openedr_network_local_port": local,
             "openedr_pid": pid,
+            "openedr_uid": str(uid),
             "openedr_file_actor_id": linux_actor_id(self.boot_id, pid, born * self.ticks // 1_000_000_000),
             "openedr_process": visible_text(raw_comm.split(b"\0", 1)[0]),
         }
@@ -129,18 +133,52 @@ class TCPTrace:
         yield self.gap("tcp_trace_stopped")
 
 
+class TCPBudget:
+    def __init__(self, trace, clock=time.monotonic):
+        self.trace = trace
+        self.clock = clock
+        self.second = -1
+        self.events = 0
+        self.accounts = {}
+        self.actors = {}
+        self.gaps = set()
+
+    def admit(self, event):
+        second = int(self.clock())
+        if second != self.second:
+            self.second, self.events = second, 0
+            self.accounts.clear()
+            self.actors.clear()
+            self.gaps.clear()
+        reason = event.get("openedr_gap_reason")
+        if reason == "tcp_trace_stopped":
+            return event
+        if reason:
+            if reason in self.gaps:
+                return None
+            self.gaps.add(reason)
+            return event
+        account, actor = event["openedr_uid"], event["openedr_file_actor_id"]
+        account_count, actor_count = self.accounts.get(account, 0), self.actors.get(actor, 0)
+        if (self.events >= MAX_EVENTS_PER_SECOND or account_count >= MAX_ACCOUNT_EVENTS_PER_SECOND
+                or actor_count >= MAX_ACTOR_EVENTS_PER_SECOND):
+            reason = "tcp_output_rate_limit"
+            if reason in self.gaps:
+                return None
+            self.gaps.add(reason)
+            return self.trace.gap(reason)
+        self.accounts[account] = account_count + 1
+        self.actors[actor] = actor_count + 1
+        self.events += 1
+        return event
+
+
 def store_records(trace, stream):
-    second, events = -1, 0
-    for event in trace.records(stream):
-        now = int(time.monotonic())
-        if now != second:
-            second, events = now, 0
-        events += 1
-        if event.get("openedr_gap_reason") != "tcp_trace_stopped":
-            if events == MAX_EVENTS_PER_SECOND + 1:
-                event = trace.gap("tcp_output_rate_limit")
-            elif events > MAX_EVENTS_PER_SECOND:
-                continue
+    budget = TCPBudget(trace)
+    for record in trace.records(stream):
+        event = budget.admit(record)
+        if event is None:
+            continue
         size = len(json.dumps(event, separators=(",", ":"))) + 1
         rotate_evidence(OUTPUT, size, LOG_MAX_BYTES, LOG_BACKUPS)
         append(event, log=OUTPUT)
