@@ -409,7 +409,7 @@ Enable this response only on enrolled Debian 13 endpoints with an out-of-band re
 
 1. Install `nftables` and `openssh-client` on the endpoint. Create `/etc/all-os-openedr/` owned by root. Give each endpoint a unique 32-character lowercase hexadecimal ID, set its enrolled Wazuh agent ID, and specify its manager's literal address and TCP port in root-owned `response.json` with mode `0600`. For example, `{"endpoint":"e24d48c344944aa9a902cbc5ed56b749","agent":"001","manager":{"ip":"192.0.2.10","port":1514}}`.
 2. Put each approved operator's public signing key in root-owned `response-signers` with mode `0600`. An allowed-signers entry starts with the operator identity, then `namespaces="all-os-openedr-response-v1"` and the public key. Keep the private keys on operator workstations. Give the dispatch account the Wazuh `active-response:command` permission only for the intended `agent:id` or group. [OpenSSH allowed signers](https://man.openbsd.org/ssh-keygen#ALLOWED_SIGNERS) · [Wazuh RBAC](https://documentation.wazuh.com/current/user-manual/api/rbac/reference.html)
-3. Install the packaged Wazuh launcher and prepare its audit log as shown below. Enable Active Response and add [the response localfile stanza](../integrations/wazuh/response-localfile.xml) on the endpoint. Reload the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Set up the dedicated OpenSearch template version 3 if using that forwarding route. Keep automatic alert triggers disabled for this launcher.
+3. Install the packaged Wazuh launcher and prepare its audit log as shown below. Enable Active Response and add [the response localfile stanza](../integrations/wazuh/response-localfile.xml) on the endpoint. Reload the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Use the current dedicated OpenSearch template if using that forwarding route. Keep automatic alert triggers disabled for this launcher.
 
 ```sh
 sudo install -o root -g wazuh -m 0750 \
@@ -436,6 +436,26 @@ curl --fail-with-body --cacert "$WAZUH_CA" --header "@$WAZUH_AUTH_HEADER" \
 Save the lease ID printed by the signer. The Wazuh API reports delivery to the active response queue. Look for `openedr_response_result: isolated` in rule `110104` before treating isolation as applied. Audit records include the signed operator, agent, alert, and lease IDs. An `authorized` record shows the endpoint accepted the approval. `isolated` and `released` record firewall changes. The deadline remains searchable even if the endpoint cannot report when the kernel lease ends.
 
 To restore access early, repeat the sample with `sign release --lease LEASE_ID` in place of `sign isolate`, omit `--seconds`, and send the resulting body to the same agent. Use `sudo all-os-openedr-response local-release` from the endpoint console if the management path is unavailable. An older approval cannot change a later lease. The in-kernel timeout restores filtering behavior if the manager or Wazuh agent stops, and reboot clears the temporary rules. Avoid saving the response table into persistent firewall configuration. If local release is unavailable, an administrator can inspect `nft list table inet all_os_openedr_response` and delete that table after verifying the lease comment. [Wazuh Active Response API](https://documentation.wazuh.com/current/user-manual/api/reference.html) · [nftables element timeouts](https://netfilter.org/projects/nftables/manpage.html)
+
+### Quarantine a managed executable from a Wazuh alert
+
+To enable file quarantine, add `"quarantine": {"filesystem": "/srv/openedr-exec", "uuid": "VOLUME_UUID"}` to the endpoint's root-owned response configuration. Use the same dedicated ext4 execution volume and UUID as the managed launcher. On this volume the response accepts a root-owned ELF executable or shebang script up to 32 MiB with a single link, an administrator-controlled path, and ordinary execution permissions. The signed approval identifies the agent, endpoint, alert, volume, path relative to the mount, and expected SHA-256. Match the digest and relative path to the alert before signing.
+
+```sh
+all-os-openedr-response sign quarantine --endpoint "$ENDPOINT_ID" --agent 001 \
+  --alert "$ALERT_ID" --signer incident-operator --key "$SIGNING_KEY" \
+  --volume "$VOLUME_UUID" --path "$RELATIVE_EXECUTABLE" --sha256 "$FILE_SHA256" \
+  > "$work/quarantine.json"
+curl --fail-with-body --cacert "$WAZUH_CA" --header "@$WAZUH_AUTH_HEADER" \
+  --header 'Content-Type: application/json' --request PUT \
+  --data-binary "@$work/quarantine.json" "$WAZUH_API/active-response?agents_list=001"
+```
+
+Save the quarantine ID printed by the signer. The endpoint moves the verified inode into the root-only `.openedr-quarantine` directory on the same volume. The move preserves its ownership, permissions, and extended attributes. Look for `openedr_response_result: quarantined` under Wazuh rule `110125`. The action disables new launches through the original path and retains the file for investigation. Existing processes, open file descriptors, and other copies require their own response.
+
+To restore after review, repeat the signing command with `sign restore --lease QUARANTINE_ID` and the original volume, relative path, and digest. A restore requires the matching receipt and refuses to overwrite an occupied destination, including a symlink. The file stays quarantined across a reboot and remains available to a root operator. If Wazuh is unavailable, use `sudo all-os-openedr-response local-restore --lease QUARANTINE_ID` from the endpoint console. The console command reads the original path and digest from the private receipt. Retain the receipts and the audit log according to site policy. [Linux atomic rename](https://manpages.debian.org/trixie/manpages-dev/renameat.2.en.html)
+
+Use OpenSearch template version 14 for new indices, or add the new keyword mappings for `data.openedr_response_file_sha256` and `data.openedr_response_volume_uuid` to the current dedicated index. The response audit records the digest, volume, quarantine ID, and Wazuh authorization fields. Restrict the signed dispatch body and local receipt to authorized operators because both include the original relative path.
 
 The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 
