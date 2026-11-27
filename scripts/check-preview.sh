@@ -7,6 +7,7 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 python3 -B -m all_os_openedr --once --output "$work/events.jsonl"
 python3 -B - "$work/events.jsonl" <<'PY'
+import array
 import base64
 import ctypes
 import errno
@@ -23,7 +24,8 @@ import threading
 import uuid
 from argparse import ArgumentTypeError
 from concurrent.futures import ThreadPoolExecutor
-from io import BytesIO
+from contextlib import ExitStack, redirect_stdout
+from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -37,7 +39,7 @@ from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspe
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
-from all_os_openedr.launch_broker import MAX_MESSAGE, parse_policy, receive_message, send_message, service
+from all_os_openedr.launch_broker import MAX_MESSAGE, parse_policy, print_output, receive_message, receive_pipes, send_message, service
 from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -612,7 +614,8 @@ policy = {
     "applications": {"fixture": {"program": "tools/fixture", "uids": [1000], "arguments": ["fixed"]}},
 }
 assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"])
-for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]}, {"arguments": ["x" * 257]}):
+for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]},
+               {"arguments": ["x" * 257]}, {"interactive": 1}):
     application = {**policy["applications"]["fixture"], **fields}
     try:
         parse_policy({**policy, "applications": {"fixture": application}})
@@ -620,6 +623,32 @@ for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True
         pass
     else:
         raise AssertionError(f"Invalid launch policy was accepted: {fields}")
+with ExitStack() as stack:
+    input_read, input_write = os.pipe()
+    output_read, output_write = os.pipe()
+    for fd in (input_read, input_write, output_read, output_write):
+        stack.callback(os.close, fd)
+    peer, worker = socket.socketpair()
+    stack.enter_context(peer)
+    stack.enter_context(worker)
+    for fds in ((input_write, output_write), (input_read, input_write), (peer.fileno(), output_write),
+                (input_read,), (input_read, output_write, peer.fileno()), (input_read, output_write)):
+        fd_count = len(os.listdir("/proc/self/fd"))
+        assert peer.sendmsg([b"I"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))]) == 1
+        try:
+            with receive_pipes(worker) as (received_input, received_output):
+                assert fds == (input_read, output_write)
+                assert not any(os.get_inheritable(fd) for fd in (received_input, received_output))
+                os.write(input_write, b"input")
+                assert os.read(received_input, 5) == b"input"
+                os.write(received_output, b"output")
+                assert os.read(output_read, 6) == b"output"
+        except ValueError:
+            assert fds != (input_read, output_write)
+        assert len(os.listdir("/proc/self/fd")) == fd_count
+with redirect_stdout(StringIO()) as rendered:
+    print_output("café\t\x1b]0;title\x07\r\n")
+assert rendered.getvalue() == "café\t?]0;title??\n"
 peer, worker = socket.socketpair()
 with peer, worker:
     send_message(peer, {"application": "fixture", "uid": 1000})

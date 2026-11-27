@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Let authorized Debian users provide input and receive plain-text output from opted-in contained commands through anonymous pipes.
 - Observe selected file opens and socket creation results from contained Debian applications without altering enforcement.
 - Look up the kernel-reported process tree and observed exec and exit events for a managed Debian containment launch.
 - Record sandbox creation before the final launch decision and show both records through an authenticated, launch-scoped management endpoint.
