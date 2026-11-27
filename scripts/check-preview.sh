@@ -563,18 +563,20 @@ assert opened["openedr_containment_activity_result"] == "succeeded"
 assert "openedr_containment_activity_errno" not in opened
 assert parse_sandbox_activity(b"17 302 1067000 59 3\n", "endpoint", boot, 999) is None
 cap = parse_sandbox_activity(b"17 302 1068000 limit 0\n", "endpoint", boot, 999)
-budget = ActivityBudget()
-assert budget.admit(network) is None
-start = parse_sandbox_activity(b"17 302 1064000 start 0\n", "endpoint", boot, 999)
-assert budget.admit(start) is None
+clock = [2000000]
+budget = ActivityBudget(lambda: clock[0])
 recorded = [result for idx in range(320)
             if (result := budget.admit({**opened, "openedr_pid": 302 + idx % 4})) is not None]
 assert len(recorded) == 129
 assert recorded[-1]["openedr_containment_activity_result"] == "limit_reached"
 assert "openedr_containment_activity_operation" not in recorded[-1]
 assert budget.admit(cap) is None
-end = parse_sandbox_activity(b"17 302 1069000 end 0\n", "endpoint", boot, 999)
-assert budget.admit(end) is None and budget.admit(network) is None
+reordered = ActivityBudget(lambda: clock[0])
+assert reordered.admit(cap) == cap
+assert reordered.admit(opened) == opened and reordered.admit(network) == network
+assert reordered.admit(cap) is None
+clock[0] += 151 * 10**9
+assert budget.admit(network) is None
 with patch.object(index, "execute", side_effect=[
     [hit({**anchor, "openedr_uid": "999", "openedr_containment_audit_session": "17"})],
     [hit({**network, "openedr_executable_path": "/omit-from-activity"}), hit(opened), hit(cap)],
