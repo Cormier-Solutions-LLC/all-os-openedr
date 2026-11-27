@@ -94,6 +94,28 @@ with TemporaryDirectory() as temporary:
             pass
         else:
             raise AssertionError("IMA read policy accepted an invalid launcher UID")
+    expected_user_rules = [
+        f"appraise func={hook} {field}={uid} fowner>0 appraise_type=imasig"
+        for uid in (1000, 1001)
+        for field in ("uid", "euid")
+        for hook in ("BPRM_CHECK", "CREDS_CHECK", "MMAP_CHECK mask=MAY_EXEC")
+    ]
+    assert list(policy_rules(execution_uuid, 999, appraise_uids=(1001, 1000, 1000))) == rules + expected_user_rules
+    assert list(policy_rules(None, appraise_uids=(1001, 1000))) == expected_user_rules
+    for launcher_uid, appraise_uids in ((None, ()), (999, (1000,))):
+        try:
+            list(policy_rules(None, launcher_uid, appraise_uids=appraise_uids))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("IMA accepted an empty policy or a volume read exception without a volume")
+    for invalid in (-1, 0, 999, 4294967295, True, "1000"):
+        try:
+            list(policy_rules(execution_uuid, 999, appraise_uids=(1001, invalid)))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("IMA accepted an invalid appraisal UID or the containment launcher UID")
     try:
         select_filesystem("/")
     except ValueError:
@@ -450,6 +472,9 @@ assert ima_event["openedr_executable_path"] == "/srv/exec/sample"
 assert ima_event["openedr_event_id"] == parse_ima_failure(ima_failure, "host", "boot")["openedr_event_id"]
 assert parse_ima_failure(ima_failure.replace(b"res=0", b"res=1"), "host", "boot") is None
 assert parse_ima_failure(ima_failure.replace(b"op=appraise_data", b"op=collect_data"), "host", "boot") is None
+denied_mapping = ima_failure.replace(b"op=appraise_data cause=missing-hash", b"op=collect_data cause=failed-mprotect")
+assert parse_ima_failure(denied_mapping, "host", "boot")["openedr_ima_cause"] == "failed-mprotect"
+assert parse_ima_failure(denied_mapping.replace(b"res=0", b"res=1"), "host", "boot") is None
 ima_rule = ElementTree.parse(integration / "110100-openedr_rules.xml").find("rule[@id='110119']")
 assert re.fullmatch(ima_rule.findtext("field[@name='openedr_event']"), ima_event["openedr_event"])
 status = b'{"child-pid":456,"pid-namespace":789}\n{"exit-code":42}\n'

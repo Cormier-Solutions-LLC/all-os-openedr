@@ -46,15 +46,32 @@ def select_filesystem(path):
     return root, metadata.st_dev, identity
 
 
-def policy_rules(identity, launcher_uid=None):
+def policy_rules(identity, launcher_uid=None, *, appraise_uids=()):
     if launcher_uid is not None and not 0 < launcher_uid < 0xFFFFFFFF:
         raise ValueError("Choose a non-root launcher UID between 1 and 4294967294")
-    yield f"appraise func=BPRM_CHECK fsuuid={identity}"
-    yield f"appraise func=MMAP_CHECK mask=MAY_EXEC fsuuid={identity}"
+    appraise_uids = tuple(appraise_uids)
+    if any(type(uid) is not int or not 0 < uid < 0xFFFFFFFF for uid in appraise_uids):
+        raise ValueError("Choose non-root appraisal UIDs between 1 and 4294967294")
+    if launcher_uid in appraise_uids:
+        raise ValueError("Use a separate UID for the containment launcher")
+    if identity is None:
+        if launcher_uid is not None:
+            raise ValueError("A launcher read exception requires a managed execution volume")
+        if not appraise_uids:
+            raise ValueError("Select an execution volume or one or more appraisal UIDs")
+    else:
+        yield f"appraise func=BPRM_CHECK fsuuid={identity}"
+        yield f"appraise func=MMAP_CHECK mask=MAY_EXEC fsuuid={identity}"
     if launcher_uid is not None:
         read_rule = f"func=FILE_CHECK mask=^MAY_READ fsuuid={identity}"
         yield f"dont_appraise {read_rule} uid={launcher_uid}"
         yield f"appraise {read_rule} uid>0"
+    for uid in sorted(set(appraise_uids)):
+        for credential in ("uid", "euid"):
+            scope = f"{credential}={uid} fowner>0 appraise_type=imasig"
+            yield f"appraise func=BPRM_CHECK {scope}"
+            yield f"appraise func=CREDS_CHECK {scope}"
+            yield f"appraise func=MMAP_CHECK mask=MAY_EXEC {scope}"
 
 
 @contextmanager
@@ -111,10 +128,12 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("policy", "approve", "revoke"):
         command = commands.add_parser(name)
-        command.add_argument("--filesystem", required=True, metavar="MOUNT_ROOT")
+        command.add_argument("--filesystem", required=name != "policy", metavar="MOUNT_ROOT")
         if name == "policy":
             command.add_argument("--launcher-uid", type=int, metavar="UID",
                                  help="appraise non-root file reads except for this dedicated containment service UID")
+            command.add_argument("--appraise-user", type=int, action="append", default=[], metavar="UID",
+                                 help="require IMA signatures for non-root-owned code run by this UID outside the volume")
         if name in ("approve", "revoke"):
             command.add_argument("file")
         if name == "approve":
@@ -123,10 +142,11 @@ def main():
     if platform.system() != "Linux" or os.geteuid() != 0:
         parser.error("Run this command as root on Linux")
     try:
-        root, device, identity = select_filesystem(options.filesystem)
         if options.command == "policy":
-            print(*policy_rules(identity, options.launcher_uid), sep="\n")
+            identity = select_filesystem(options.filesystem)[2] if options.filesystem is not None else None
+            print(*policy_rules(identity, options.launcher_uid, appraise_uids=options.appraise_user), sep="\n")
             return 0
+        root, device, _ = select_filesystem(options.filesystem)
         with open_candidate(root, device, options.file) as (fd, metadata):
             if options.command == "approve":
                 catalog_id, verdicts = read_catalog(options.catalog)

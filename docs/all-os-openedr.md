@@ -137,7 +137,21 @@ printf '%s\n' /root/openedr-ima-policy | sudo tee /sys/kernel/security/ima/polic
 
 To persist a tested custom policy on a fresh Debian host, have systemd load it at boot from `/etc/ima/ima-policy`. Retain the previous configuration. To roll back, restore the previous boot policy or remove the added file if there was no previous policy, then reboot. To withdraw one file's local approval, run `sudo all-os-openedr-ima revoke --filesystem /srv/openedr-exec /srv/openedr-exec/approved-program`. The next appraised operation uses the current file and approval. Approve copies that lack the attribute before execution. Code read as ordinary interpreter input is outside the direct execution and executable mapping hooks.
 
-For Wazuh alerts, install the packaged Audit dispatcher configuration and the separate JSON input. This keeps each IMA appraisal failure searchable even when the original Audit log groups it with syscall records for another Wazuh rule. The dispatcher writes the raw record, path, failure cause, process ID, and login UID. Kernel appraisal mode determines whether an appraisal failure denies the operation. [Debian Audit plugins](https://manpages.debian.org/trixie/auditd/auditd-plugins.5.en.html)
+#### Require integrity approval for native code owned by ordinary users
+
+Add `--appraise-user UID` for each ordinary account that needs native execution protection beyond the managed volume. The kernel requires an IMA signature for non-root-owned code when a direct launch uses or would acquire a selected real or effective UID. The rules also cover initial executable file mappings and deny adding execute permission to an existing file mapping in that scope. They apply to paths such as a user's home and download directories. Administrator-controlled root-owned tools retain their normal behavior outside the enrolled volume. Existing approval rules continue to apply on the enrolled volume. [IMA policy matching](https://github.com/torvalds/linux/blob/v6.12/security/integrity/ima/ima_policy.c) · [IMA execution and mapping hooks](https://github.com/torvalds/linux/blob/v6.12/security/integrity/ima/ima_main.c)
+
+```sh
+sudo all-os-openedr-ima policy --filesystem /srv/openedr-exec \
+    --launcher-uid "$(id -u openedr-broker)" \
+    --appraise-user "$(id -u USER)" > openedr-ima-policy
+```
+
+For account-only appraisal on a host without an enrolled volume, omit `--filesystem` and `--launcher-uid`. Use a dedicated broker UID outside the selected accounts when combining the policies. Review existing user software and confirm the IMA keyring and rules before enabling the policy. Verify a benign unsigned program, a file-backed executable mapping, and administrator-installed tools under a selected account. On an enrolled volume, also verify approved native execution and a managed containment launch. A denied direct launch remains denied. Use the enrolled broker entry point for a contained launch. Ordinary interpreter reads outside the managed volume, anonymous executable memory, and other executing accounts require separate coverage. Restore the previous boot policy and reboot to roll back the selected accounts.
+
+When IMA rejects an executable after Linux has started replacing the calling process, the caller may report `SIGSEGV`. Check the matching kernel integrity denial to identify the policy decision. [Linux execve failure behavior](https://manpages.debian.org/trixie/manpages-dev/execve.2.en.html)
+
+For Wazuh alerts, install the packaged Audit dispatcher configuration and the separate JSON input. This keeps each IMA appraisal failure searchable even when the original Audit log groups it with syscall records for another Wazuh rule. The dispatcher records appraisal failures and IMA denials of changes to executable file mappings. It includes the raw record, path, failure cause, process ID, and login UID. Kernel appraisal mode determines whether an appraisal failure denies the operation. [Debian Audit plugins](https://manpages.debian.org/trixie/auditd/auditd-plugins.5.en.html)
 
 ```sh
 sudo install -d -o root -g root -m 0750 /var/log/all-os-openedr-ima
