@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Look up the kernel-reported process tree and observed exec and exit events for a managed Debian containment launch.
 - Record sandbox creation before the final launch decision and show both records through an authenticated, launch-scoped management endpoint.
 - Give authorized Debian users a local launch client for administrator-staged applications on an IMA volume and record their caller UID in the containment audit event.
 - Optionally require integrity approval for ordinary file reads on a dedicated execution volume, with a read exception for the managed containment service account.

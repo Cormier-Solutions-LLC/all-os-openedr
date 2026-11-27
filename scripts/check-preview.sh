@@ -38,9 +38,10 @@ from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.launch_broker import MAX_MESSAGE, parse_policy, receive_message, send_message, service
-from all_os_openedr.manager import CONTAINMENT_ROUTE, Index
+from all_os_openedr.manager import CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
+from all_os_openedr.process_tree import containment_process_tree
 from all_os_openedr.response import apply, decode_token
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
@@ -492,6 +493,7 @@ with os.fdopen(os.memfd_create("openedr-verify-status", os.MFD_CLOEXEC), "rb") a
 launch_id = "a" * 32
 assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id)
 assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id + "?id=other") is None
+assert PROCESSES_ROUTE.fullmatch("/v1/containment/" + launch_id + "/processes")
 creation = {
     "openedr_source": "all-os-openedr", "openedr_event": "executable.sandbox_created",
     "openedr_containment_launch_id": launch_id, "openedr_requester_uid": 1000,
@@ -509,6 +511,44 @@ with patch.object(index.client, "open", return_value=BytesIO(json.dumps(payload)
     request = json.loads(open_search.call_args.args[0].data)
     assert request["size"] == 4
     assert {"term": {"data.openedr_containment_launch_id": launch_id}} in request["query"]["bool"]["filter"]
+
+boot = "4c6a4a9e-2e2a-484c-886d-ece33cf527b0"
+stream = "b" * 32
+endpoint = {"openedr_host": "endpoint", "openedr_boot_id": boot}
+root_id, child_id, grandchild_id = (x * 64 for x in ("a", "c", "d"))
+anchor = {**creation, **endpoint, "openedr_containment_pid": "301", "openedr_containment_monitor_pid": "300",
+          "openedr_containment_fork_after_ns": "1000000.000000",
+          "openedr_containment_fork_before_ns": "1100000.000000"}
+root = {**endpoint, "openedr_event": "process.fork", "openedr_pid": "301", "openedr_parent_pid": "300",
+        "openedr_process_id": root_id, "openedr_stream_id": stream, "openedr_kernel_monotonic_ns": "1050000.000000"}
+child = {**root, "openedr_pid": "302", "openedr_process_id": child_id, "openedr_parent_process_id": root_id}
+grandchild = {**child, "openedr_pid": "303", "openedr_process_id": grandchild_id,
+              "openedr_parent_process_id": child_id, "openedr_executable_path": "/omit-from-tree"}
+exited = {**grandchild, "openedr_event": "process.task_exit", "openedr_wait_status": 0}
+
+
+def hit(data, agent="001"):
+    return {"agent": {"id": agent}, "data": data}
+
+
+with patch.object(index, "execute", side_effect=[
+    [hit(anchor)], [hit(root)], [hit(child)], [hit(grandchild)], [], [hit(exited)],
+]) as search:
+    tree = containment_process_tree(index, launch_id)
+    assert tree["status"] == "observed" and tree["root_process_id"] == root_id and not tree["truncated"]
+    assert [node["openedr_process_id"] for node in tree["processes"]] == [root_id, child_id, grandchild_id]
+    assert all("openedr_executable_path" not in row for row in (*tree["processes"], *tree["events"]))
+    root_filters = search.call_args_list[1].args[0]["query"]["bool"]["filter"]
+    assert {"term": {"agent.id": "001"}} in root_filters
+    assert {"term": {"data.openedr_boot_id": boot}} in root_filters
+    assert {"range": {"data.openedr_kernel_monotonic_ns": {"gte": 1000000, "lte": 1100000}}} in root_filters
+    descendant_filters = search.call_args_list[3].args[0]["query"]["bool"]["filter"]
+    assert {"terms": {"data.openedr_parent_process_id": [child_id]}} in descendant_filters
+    assert {"term": {"data.openedr_stream_id": stream}} in descendant_filters
+with patch.object(index, "execute", side_effect=[[hit(anchor)], [hit(root, agent="002")]]):
+    assert containment_process_tree(index, launch_id)["status"] == "root_unavailable"
+with patch.object(index, "execute", side_effect=[[hit(anchor)], [hit(root), hit(root)]]):
+    assert containment_process_tree(index, launch_id)["status"] == "ambiguous_root"
 for header, expected in (
     (b"#!/bin/sh\n", ("dash", ())),
     (b"#!\t/usr/bin/dash -eu\n", ("dash", ("-eu",))),
@@ -620,6 +660,9 @@ for key, field_type in (
     ("openedr_containment_application", "keyword"),
     ("openedr_containment_launch_id", "keyword"),
     ("openedr_containment_pid_namespace", "long"),
+    ("openedr_containment_monitor_pid", "long"),
+    ("openedr_containment_fork_after_ns", "long"),
+    ("openedr_containment_fork_before_ns", "long"),
     ("openedr_requester_uid", "long"),
 ):
     assert fields[key]["type"] == field_type
