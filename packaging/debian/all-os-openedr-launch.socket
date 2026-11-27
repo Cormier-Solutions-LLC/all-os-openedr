@@ -1,0 +1,18 @@
+[Unit]
+Description=All OS OpenEDR local containment requests
+
+[Socket]
+ListenStream=/run/all-os-openedr-launch.sock
+Accept=yes
+SocketUser=root
+SocketGroup=openedr-launch
+SocketMode=0660
+MaxConnections=8
+MaxConnectionsPerSource=2
+TriggerLimitIntervalSec=0
+PollLimitIntervalSec=1s
+PollLimitBurst=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

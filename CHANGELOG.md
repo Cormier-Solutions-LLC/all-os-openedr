@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Give authorized Debian users a local launch client for administrator-staged applications on an IMA volume and record their caller UID in the containment audit event.
 - Optionally require integrity approval for ordinary file reads on a dedicated execution volume, with a read exception for the managed containment service account.
 - Run supported POSIX shell and Bash scripts in the managed Debian sandbox, with interpreter evidence in the launch record.
 - Bind managed launches to an enrolled ext4 volume by UUID and require the kernel IMA approval attribute before permitting native execution from that volume.

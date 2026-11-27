@@ -1,0 +1,19 @@
+[Unit]
+Description=All OS OpenEDR local containment request
+PartOf=all-os-openedr-launch.socket
+CollectMode=inactive-or-failed
+
+[Service]
+User=openedr-broker
+ExecStart=/usr/lib/all-os-openedr/all-os-openedr-launch-broker
+StandardInput=socket
+StandardOutput=null
+StandardError=append:/var/log/all-os-openedr-containment/launches.jsonl
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+UMask=0077
+RuntimeMaxSec=45s
+TasksMax=48
+MemoryMax=256M

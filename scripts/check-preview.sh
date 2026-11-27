@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import struct
 import sys
 import uuid
@@ -32,6 +33,7 @@ from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspe
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
+from all_os_openedr.launch_broker import MAX_MESSAGE, parse_policy, receive_message, send_message, service
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.response import apply, decode_token
@@ -462,6 +464,46 @@ for header, expected in (
     snapshot = BytesIO(header)
     snapshot.seek(0, 2)
     assert script_shell(snapshot) == expected, header
+policy = {
+    "schema": 1, "filesystem": "/srv/execution", "uuid": "a431703b-1fb1-43c3-9344-4cfac8e9ef6c",
+    "catalog": "/etc/verdicts.json",
+    "applications": {"fixture": {"program": "tools/fixture", "uids": [1000], "arguments": ["fixed"]}},
+}
+assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"])
+for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]}, {"arguments": ["x" * 257]}):
+    application = {**policy["applications"]["fixture"], **fields}
+    try:
+        parse_policy({**policy, "applications": {"fixture": application}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"Invalid launch policy was accepted: {fields}")
+peer, worker = socket.socketpair()
+with peer, worker:
+    send_message(peer, {"application": "fixture", "uid": 1000})
+    with patch("all_os_openedr.launch_broker.emit"), patch("all_os_openedr.launch_broker.read_policy") as read:
+        service(worker)
+        assert receive_message(peer, 1)["reason"] == "invalid_request"
+        read.assert_not_called()
+peer, worker = socket.socketpair()
+with peer, worker:
+    send_message(peer, {"application": "fixture"})
+    empty_policy = (*parse_policy(policy)[:3], {})
+    with patch("all_os_openedr.launch_broker.read_policy", return_value=empty_policy), \
+            patch("all_os_openedr.launch_broker.emit") as emit, patch("all_os_openedr.launch_broker.launch") as launch_app:
+        service(worker)
+        assert receive_message(peer, 1)["reason"] == "request_not_authorized"
+        assert emit.call_args.args[0]["openedr_requester_uid"] == os.getuid()
+        launch_app.assert_not_called()
+peer, worker = socket.socketpair()
+with peer, worker:
+    peer.sendall(b" " * MAX_MESSAGE + b"\n")
+    try:
+        receive_message(worker, 1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An oversized launch request was accepted")
 containment = ElementTree.parse(integration / "containment-localfile.xml")
 assert containment.findtext("location") == "/var/log/all-os-openedr-containment/launches.jsonl"
 assert containment.findtext("log_format") == "json"
@@ -512,6 +554,8 @@ for key, field_type in (
     ("openedr_containment_interpreter", "keyword"),
     ("openedr_containment_exit_code", "integer"),
     ("openedr_containment_pid", "long"),
+    ("openedr_containment_application", "keyword"),
+    ("openedr_requester_uid", "long"),
 ):
     assert fields[key]["type"] == field_type
 for role in ("reader", "writer"):
@@ -542,6 +586,12 @@ cmp packaging/debian/all-os-openedr-executable.service \
 test -x "$work/package/usr/bin/all-os-openedr-audit-rules"
 test -x "$work/package/usr/bin/all-os-openedr-ima"
 test -x "$work/package/usr/bin/all-os-openedr-launch"
+test -x "$work/package/usr/bin/all-os-openedr-run"
+test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-launch-broker"
+cmp packaging/debian/all-os-openedr-launch.socket \
+    "$work/package/usr/lib/systemd/system/all-os-openedr-launch.socket"
+cmp packaging/debian/all-os-openedr-launch@.service \
+    "$work/package/usr/lib/systemd/system/all-os-openedr-launch@.service"
 test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-ima-audit"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"

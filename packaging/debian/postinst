@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+if [ "$1" = configure ]; then
+    deb-systemd-helper update-state all-os-openedr-launch.socket >/dev/null
+fi
 if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if [ -n "${2:-}" ]; then

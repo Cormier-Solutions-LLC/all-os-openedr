@@ -16,6 +16,8 @@ This repository preserves the source and history of [ComodoSecurity/openedr](htt
 
 See the [installation and delivery guide](docs/all-os-openedr.md), [release notes](CHANGELOG.md), [downloads](https://github.com/Cormier-Solutions-LLC/all-os-openedr/releases), [project board](https://github.com/orgs/Cormier-Solutions-LLC/projects/5), and [milestones](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestones).
 
+Debian 13 is the priority for Windows OpenEDR feature parity. Release qualification requires endpoint protection and response, alongside monitoring, investigation, and fleet management. The project tracks the Windows agent version and edition for each outcome. Xcitium's FAQ lists full endpoint protection, ZeroDwell containment, and RMM among its paid capabilities. [Debian parity milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) · [Xcitium Free EDR](https://www.xcitium.com/free-edr/)
+
 ## Upstream OpenEDR documentation
 [![OpenEDR](https://techtalk.comodo.com/wp-content/uploads/2020/09/logo_small.jpg)](https://openedr.com/)
 [![Slack](https://img.shields.io/badge/slack-join-blue.svg)](https://openedr.com/register/) [![Email](https://img.shields.io/badge/email-join-blue.svg)](mailto:register@openedr.com)

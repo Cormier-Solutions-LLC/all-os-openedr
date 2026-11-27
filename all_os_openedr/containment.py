@@ -188,18 +188,22 @@ def emit(event, decision, reason, **details):
     }, separators=(",", ":")), file=sys.stderr, flush=True)
 
 
-def launch(options, event):
+def launch(options, event, *, delegated=False, reporter=None):
+    report = reporter or emit
     volume_device = None
+    if delegated and options.execution_volume is None:
+        report(event, "blocked", "execution_volume_unavailable")
+        return LAUNCH_FAILED
     if options.execution_volume is not None:
         mount, expected = options.execution_volume
         event["openedr_executable_volume_uuid"] = expected
         try:
             root, device, identity = select_filesystem(mount)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-            emit(event, "blocked", "execution_volume_unavailable")
+            report(event, "blocked", "execution_volume_unavailable")
             return LAUNCH_FAILED
         if str(identity) != expected:
-            emit(event, "blocked", "execution_volume_mismatch")
+            report(event, "blocked", "execution_volume_mismatch")
             return LAUNCH_FAILED
         volume_device = device
     try:
@@ -209,23 +213,29 @@ def launch(options, event):
     except (OSError, RuntimeError, ValueError):
         catalog_id, verdicts = None, {}
     if catalog_id is None:
-        emit(event, "blocked", "catalog_unavailable")
+        report(event, "blocked", "catalog_unavailable")
         return LAUNCH_FAILED
     event["openedr_executable_catalog_sha256"] = catalog_id
     path = Path(options.program).resolve(strict=True)
     if volume_device is not None and not path.is_relative_to(root):
-        emit(event, "blocked", "execution_volume_mismatch")
+        report(event, "blocked", "execution_volume_mismatch")
+        return LAUNCH_FAILED
+    if delegated and (path != options.program or not path.is_file() or not trusted_location(path, path.stat())):
+        report(event, "blocked", "unmanaged_location")
         return LAUNCH_FAILED
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     with os.fdopen(os.open(path, flags), "rb") as source:
         fd = source.fileno()
         metadata = os.fstat(fd)
         if volume_device is not None and metadata.st_dev != volume_device:
-            emit(event, "blocked", "execution_volume_mismatch")
+            report(event, "blocked", "execution_volume_mismatch")
+            return LAUNCH_FAILED
+        if delegated and not trusted_location(path, metadata):
+            report(event, "blocked", "unmanaged_location")
             return LAUNCH_FAILED
         if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
                 or os.fstatvfs(fd).f_flag & os.ST_NOEXEC):
-            emit(event, "blocked", "file_not_executable")
+            report(event, "blocked", "file_not_executable")
             return LAUNCH_FAILED
         copy_fd = os.memfd_create("openedr-program", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
         with os.fdopen(copy_fd, "w+b") as snapshot:
@@ -233,33 +243,33 @@ def launch(options, event):
             digest = event.get("openedr_executable_sha256")
             kind = event.get("openedr_executable_format")
             if digest is None or kind not in ("elf", "script"):
-                emit(event, "blocked", "unsupported_program")
+                report(event, "blocked", "unsupported_program")
                 return LAUNCH_FAILED
             if kind == "elf" and not os.access(path, os.X_OK):
-                emit(event, "blocked", "file_not_executable")
+                report(event, "blocked", "file_not_executable")
                 return LAUNCH_FAILED
             verdict = verdicts.get(digest, "unknown")
             event["openedr_executable_verdict"] = verdict
             if verdict == "untrusted":
-                emit(event, "blocked", "catalog_denied")
+                report(event, "blocked", "catalog_denied")
                 return LAUNCH_FAILED
             script = None
             if kind == "script":
                 script = script_shell(snapshot) if platform.machine() == "x86_64" else None
                 if script is None:
-                    emit(event, "blocked", "unsupported_interpreter")
+                    report(event, "blocked", "unsupported_interpreter")
                     return LAUNCH_FAILED
                 event["openedr_containment_interpreter"] = script[0]
-            if (script is None and verdict == "trusted" and trusted_location(path, metadata)
+            if (not delegated and script is None and verdict == "trusted" and trusted_location(path, metadata)
                     and file_version(metadata) == file_version(os.fstat(fd))):
                 if volume_device is not None and not has_volume_approval(fd, digest):
-                    emit(event, "blocked", "ima_approval_missing")
+                    report(event, "blocked", "ima_approval_missing")
                     return LAUNCH_FAILED
-                emit(event, "approved", "catalog_trusted")
+                report(event, "approved", "catalog_trusted")
                 try:
                     os.execve(fd, [str(path), *options.arguments], os.environ)
                 except OSError:
-                    emit({**event, "openedr_event_id": uuid.uuid4().hex}, "blocked", "native_exec_failed")
+                    report({**event, "openedr_event_id": uuid.uuid4().hex}, "blocked", "native_exec_failed")
                     return LAUNCH_FAILED
             exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script)
             details = {"openedr_containment_exit_code": exit_code}
@@ -267,12 +277,31 @@ def launch(options, event):
                 details["openedr_containment_pid"] = pid
                 if verdict == "unknown":
                     reason = "catalog_unknown"
+                elif delegated:
+                    reason = "delegated_launch"
                 else:
                     reason = "script_requires_isolation" if script is not None else "unmanaged_location"
-                emit(event, "isolated", reason, **details)
+                report(event, "isolated", reason, **details)
             else:
-                emit(event, "blocked", outcome, **details)
+                report(event, "blocked", outcome, **details)
             return exit_code
+
+
+def launch_event(program=None):
+    event = {
+        "openedr_source": "all-os-openedr",
+        "openedr_schema": 1,
+        "openedr_event": "executable.launch_decision",
+        "openedr_event_id": uuid.uuid4().hex,
+        "openedr_host": socket.gethostname(),
+        "openedr_boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "openedr_observed_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "openedr_pid": os.getpid(),
+        "openedr_uid": os.getuid(),
+    }
+    if program is not None:
+        event["openedr_executable_path"] = visible_text(os.fsencode(program))
+    return event
 
 
 def main():
@@ -298,18 +327,7 @@ def main():
             parser.error("Supply the execution volume's filesystem UUID")
     if not 1 <= options.timeout <= 300:
         parser.error("Use a timeout between 1 and 300 seconds")
-    event = {
-        "openedr_source": "all-os-openedr",
-        "openedr_schema": 1,
-        "openedr_event": "executable.launch_decision",
-        "openedr_event_id": uuid.uuid4().hex,
-        "openedr_host": socket.gethostname(),
-        "openedr_boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-        "openedr_observed_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-        "openedr_pid": os.getpid(),
-        "openedr_uid": os.getuid(),
-        "openedr_executable_path": visible_text(os.fsencode(options.program)),
-    }
+    event = launch_event(options.program)
     try:
         return launch(options, event)
     except (OSError, RuntimeError, ValueError):

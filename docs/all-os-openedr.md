@@ -243,6 +243,37 @@ sudo all-os-openedr-ima policy --filesystem /srv/openedr-exec \
 
 Review and load the generated policy using the IMA procedure above. This covers file reads throughout the selected filesystem, so keep ordinary data and application state on other volumes. Apply it at boot before user services acquire file descriptors. Verify that an ordinary account can open an approved fixture, that its shell cannot read an unsigned fixture, and that the managed service still isolates the unsigned fixture. The kernel records appraisal failures for the existing Wazuh rule `110119`.
 
+#### Allow ordinary users to request contained launches
+
+On Debian 13 amd64, install Bubblewrap and the Python seccomp bindings. Create a locked, dedicated broker account with a stable UID and a separate group for users allowed to request launches.
+
+```sh
+sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin openedr-broker
+sudo groupadd --system openedr-launch
+sudo usermod -aG openedr-launch USER
+sudo install -d -m 0750 -o root -g root /var/log/all-os-openedr-containment
+sudo all-os-openedr-ima policy --filesystem /srv/openedr-exec \
+    --launcher-uid "$(id -u openedr-broker)" > openedr-ima-policy
+```
+
+Apply the policy at boot with the volume enrolled as described above. Keep the staged programs and their parent directories root-owned with group and other writes disabled. Make the root-owned verdict catalog readable by the broker. Install the following policy as `/etc/all-os-openedr-launch.json` with owner `root:openedr-broker` and mode `0640`. Use the volume's actual UUID and the UID from `id -u USER`.
+
+```json
+{
+  "schema": 1,
+  "filesystem": "/srv/openedr-exec",
+  "uuid": "REPLACE_WITH_VOLUME_UUID",
+  "catalog": "/etc/all-os-openedr-executable-verdicts.json",
+  "applications": {
+    "my-app": {"program": "my-app", "uids": [1000], "arguments": []}
+  }
+}
+```
+
+Enable the listener with `sudo systemctl enable --now all-os-openedr-launch.socket`. After signing in again to pick up group membership, the authorized user can run `all-os-openedr-run my-app`. Local Unix credentials identify the caller. The policy identifies authorized UIDs, paths relative to the enrolled volume, and fixed arguments. The client prints the decision and audit ID and returns the contained program's exit status. Each allowed launch uses the sandbox, including for a catalog-trusted program. Process input and output are disconnected. Keep the broker UID reserved for this service and update the policy before removing or reassigning a caller UID.
+
+Test the direct IMA denial, authorized request, and unauthorized request as ordinary users before enrollment. The JSON launch record includes the authenticated caller UID and the enrolled application name for authorized requests. Wazuh uses the existing isolated and blocked launch rules. Apply the updated OpenSearch template for new indices. Stop and disable the socket to withdraw delegated launch access.
+
 ### Protect local directories and mounted SMB shares
 
 Pass `--protect-tree DIR` to grant recursive reads and have AppArmor block and audit writes, appends, and hard links through the protected paths. Pass `--write-directory DIR` to allow creation, updates, and renames of files directly under a separate existing directory. The writable rule leaves subdirectories outside its scope. AppArmor matches canonical paths and applies the profile to the managed workload and its descendants. [Debian AppArmor policy syntax](https://manpages.debian.org/trixie/apparmor/apparmor.d.5.en.html)
