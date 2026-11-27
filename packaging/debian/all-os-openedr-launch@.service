@@ -15,6 +15,6 @@ ProtectSystem=strict
 PrivateTmp=yes
 TemporaryFileSystem=/run/all-os-openedr-export:rw,nosuid,nodev,noexec,size=16M,mode=1777
 UMask=0077
-RuntimeMaxSec=45s
+RuntimeMaxSec=60s
 TasksMax=48
 MemoryMax=256M

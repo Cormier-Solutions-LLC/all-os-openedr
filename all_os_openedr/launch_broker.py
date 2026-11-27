@@ -36,7 +36,7 @@ LAUNCH_TIMEOUT = 30
 OUTPUT_LIMIT = 256 * 1024
 DOCUMENT_LIMIT = 8 * 1024 * 1024
 DOCUMENT_LENGTH = struct.Struct("!I")
-DOWNLOAD_TIMEOUT = 5
+DOWNLOAD_TIMEOUT = 15
 PEER = struct.Struct("=iII")
 IO_READY = {"ready_for_io": True}
 IO_OPTIONS = ("interactive", "document", "export")
