@@ -288,7 +288,7 @@ Apply the policy at boot with the volume enrolled as described above. Keep the s
   "uuid": "REPLACE_WITH_VOLUME_UUID",
   "catalog": "/etc/all-os-openedr-executable-verdicts.json",
   "applications": {
-    "my-app": {"program": "my-app", "uids": [1000], "arguments": [], "interactive": true}
+    "my-app": {"program": "my-app", "uids": [1000], "arguments": [], "interactive": true, "document": true}
   }
 }
 ```
@@ -296,6 +296,19 @@ Apply the policy at boot with the volume enrolled as described above. Keep the s
 Enable the listener with `sudo systemctl enable --now all-os-openedr-launch.socket`. After signing in again to pick up group membership, the authorized user can run `all-os-openedr-run my-app`. Local Unix credentials identify the caller. The policy identifies authorized UIDs, paths relative to the enrolled volume, and fixed arguments. The client prints the decision and audit ID and returns the contained program's exit status. Each allowed launch uses the sandbox, including for a catalog-trusted program. Keep the broker UID reserved for this service and update the policy before removing or reassigning a caller UID.
 
 Set `interactive` to `true` for applications that need line-oriented input and output. The user can type input with `all-os-openedr-run --interactive my-app` or select a readable input file with `all-os-openedr-run --interactive my-app < document.txt`. The sandbox sees anonymous pipes. Its filesystem, network, devices, and process namespace use the same isolation policy. Standard output and error are combined as plain UTF-8 text, with terminal controls replaced and a 256 KiB output limit. The launch decision and audit ID go to standard error. Use this mode for line-oriented commands that finish within 30 seconds. Full-screen terminal and graphical applications require separate support. Ctrl+C, disconnecting the client, and exceeding its output limit end the session. The default launch keeps input and output disconnected.
+
+Set `document` to `true` for an application that takes a document path as its last argument. An authorized user can run `all-os-openedr-run --interactive --document "./document.txt" my-app`. The client reads a regular file up to 8 MiB with the user's permissions. The sandbox receives a seekable, read-only snapshot at `/run/openedr/document` and the original host path stays outside the sandbox. The broker records its launch decision without the document name or contents. Omit `--interactive` for applications that can run without terminal I/O. [Linux file sealing](https://manpages.debian.org/trixie/manpages-dev/memfd_create.2.en.html) · [Bubblewrap file binding](https://manpages.debian.org/trixie/bubblewrap/bwrap.1.en.html)
+
+To offer a contained document action in a desktop file manager, install an application entry such as `~/.local/share/applications/openedr-my-app.desktop`. Use the MIME type supported by the enrolled command. This example opens one local text document in a terminal and leaves the user's default application selection in place. [Desktop Entry file arguments](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html)
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Open text in containment
+Exec=/usr/bin/all-os-openedr-run --interactive --document %f my-app
+Terminal=true
+MimeType=text/plain;
+```
 
 Test the direct IMA denial, authorized request, and unauthorized request as ordinary users before enrollment. The JSON launch record includes the authenticated caller UID and the enrolled application name for authorized requests. Wazuh uses the existing isolated and blocked launch rules. Apply the updated OpenSearch template for new indices. Stop and disable the socket to withdraw delegated launch access.
 

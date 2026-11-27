@@ -11,6 +11,7 @@ import array
 import base64
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -34,12 +35,12 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
-from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_shell
+from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_shell
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
-from all_os_openedr.launch_broker import MAX_MESSAGE, parse_policy, print_output, receive_message, receive_pipes, send_message, service
+from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, parse_policy, print_output, read_document, receive_document, receive_message, receive_pipes, send_message, service
 from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -615,7 +616,7 @@ policy = {
 }
 assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"])
 for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]},
-               {"arguments": ["x" * 257]}, {"interactive": 1}):
+               {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}):
     application = {**policy["applications"]["fixture"], **fields}
     try:
         parse_policy({**policy, "applications": {"fixture": application}})
@@ -623,6 +624,37 @@ for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True
         pass
     else:
         raise AssertionError(f"Invalid launch policy was accepted: {fields}")
+with TemporaryDirectory() as directory:
+    selected = Path(directory) / "selected document"
+    selected.write_bytes(b"example\0document\xff")
+    assert read_document(selected) == b"example\0document\xff"
+    with selected.open("wb") as stream:
+        stream.truncate(DOCUMENT_LIMIT + 1)
+    for invalid in (selected, Path("/dev/zero")):
+        try:
+            read_document(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Accepted invalid document {invalid}")
+for payload in (b"", b"example\0document\xff"):
+    with ExitStack() as stack:
+        peer, worker = socket.socketpair()
+        stack.enter_context(peer)
+        stack.enter_context(worker)
+        peer.sendall(DOCUMENT_LENGTH.pack(len(payload)) + payload)
+        with receive_document(worker) as snapshot:
+            assert os.pread(snapshot, len(payload) + 1, 0) == payload
+            assert fcntl.fcntl(snapshot, fcntl.F_GET_SEALS) & IMMUTABLE_SEALS == IMMUTABLE_SEALS
+        for invalid in (DOCUMENT_LENGTH.pack(DOCUMENT_LIMIT + 1), DOCUMENT_LENGTH.pack(1)):
+            peer.sendall(invalid)
+            if invalid == DOCUMENT_LENGTH.pack(1):
+                peer.shutdown(socket.SHUT_WR)
+            try:
+                with receive_document(worker):
+                    raise AssertionError("Accepted oversized or truncated document upload")
+            except ValueError:
+                pass
 with ExitStack() as stack:
     input_read, input_write = os.pipe()
     output_read, output_write = os.pipe()
