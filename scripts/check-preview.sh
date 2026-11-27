@@ -38,11 +38,12 @@ from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.launch_broker import MAX_MESSAGE, parse_policy, receive_message, send_message, service
-from all_os_openedr.manager import CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
+from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
 from all_os_openedr.response import apply, decode_token
+from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
 with TemporaryDirectory() as temporary:
@@ -494,6 +495,7 @@ launch_id = "a" * 32
 assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id)
 assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id + "?id=other") is None
 assert PROCESSES_ROUTE.fullmatch("/v1/containment/" + launch_id + "/processes")
+assert ACTIVITY_ROUTE.fullmatch("/v1/containment/" + launch_id + "/activity")
 creation = {
     "openedr_source": "all-os-openedr", "openedr_event": "executable.sandbox_created",
     "openedr_containment_launch_id": launch_id, "openedr_requester_uid": 1000,
@@ -549,6 +551,44 @@ with patch.object(index, "execute", side_effect=[[hit(anchor)], [hit(root, agent
     assert containment_process_tree(index, launch_id)["status"] == "root_unavailable"
 with patch.object(index, "execute", side_effect=[[hit(anchor)], [hit(root), hit(root)]]):
     assert containment_process_tree(index, launch_id)["status"] == "ambiguous_root"
+
+network = parse_sandbox_activity(b"17 302 1065000 41 -1\n", "endpoint", boot, 999)
+assert network["openedr_containment_activity_class"] == "network"
+assert network["openedr_containment_activity_result"] == "failed"
+assert network["openedr_containment_activity_errno"] == 1
+assert network["openedr_containment_audit_session"] == 17
+opened = parse_sandbox_activity(b"17 302 1067000 257 3\n", "endpoint", boot, 999)
+assert opened["openedr_containment_activity_class"] == "file"
+assert opened["openedr_containment_activity_result"] == "succeeded"
+assert "openedr_containment_activity_errno" not in opened
+assert parse_sandbox_activity(b"17 302 1067000 59 3\n", "endpoint", boot, 999) is None
+cap = parse_sandbox_activity(b"17 302 1068000 limit 0\n", "endpoint", boot, 999)
+clock = [2000000]
+budget = ActivityBudget(lambda: clock[0])
+recorded = [result for idx in range(320)
+            if (result := budget.admit({**opened, "openedr_pid": 302 + idx % 4})) is not None]
+assert len(recorded) == 129
+assert recorded[-1]["openedr_containment_activity_result"] == "limit_reached"
+assert "openedr_containment_activity_operation" not in recorded[-1]
+assert budget.admit(cap) is None
+reordered = ActivityBudget(lambda: clock[0])
+assert reordered.admit(cap) == cap
+assert reordered.admit(opened) == opened and reordered.admit(network) == network
+assert reordered.admit(cap) is None
+clock[0] += 151 * 10**9
+assert budget.admit(network) is None
+with patch.object(index, "execute", side_effect=[
+    [hit({**anchor, "openedr_uid": "999", "openedr_containment_audit_session": "17"})],
+    [hit({**network, "openedr_executable_path": "/omit-from-activity"}), hit(opened), hit(cap)],
+]) as query:
+    activity = index.containment_activity(launch_id)
+    assert activity["status"] == "observed" and activity["truncated"] and len(activity["events"]) == 2
+    assert "openedr_executable_path" not in activity["events"][0]
+    filters = query.call_args.args[0]["query"]["bool"]["filter"]
+    assert {"term": {"agent.id": "001"}} in filters
+    assert {"term": {"data.openedr_boot_id": boot}} in filters
+    assert {"term": {"data.openedr_uid": 999}} in filters
+    assert {"term": {"data.openedr_containment_audit_session": 17}} in filters
 for header, expected in (
     (b"#!/bin/sh\n", ("dash", ())),
     (b"#!\t/usr/bin/dash -eu\n", ("dash", ("-eu",))),
@@ -614,6 +654,7 @@ assert launch_rules.find("rule[@id='110120']/field").attrib["name"] == "openedr_
 assert launch_rules.findtext("rule[@id='110121']/if_sid") == "110120"
 assert launch_rules.findtext("rule[@id='110122']/if_sid") == "110120"
 assert re.fullmatch(launch_rules.findtext("rule[@id='110123']/field"), creation["openedr_event"])
+assert re.fullmatch(launch_rules.findtext("rule[@id='110124']/field"), network["openedr_event"])
 samba_feed = ElementTree.parse(integration / "samba-localfile.xml")
 assert samba_feed.findtext("location") == "/var/log/samba/openedr-share-audit.log"
 assert samba_feed.findtext("log_format") == "syslog"
@@ -663,6 +704,11 @@ for key, field_type in (
     ("openedr_containment_monitor_pid", "long"),
     ("openedr_containment_fork_after_ns", "long"),
     ("openedr_containment_fork_before_ns", "long"),
+    ("openedr_containment_audit_session", "long"),
+    ("openedr_containment_activity_class", "keyword"),
+    ("openedr_containment_activity_operation", "keyword"),
+    ("openedr_containment_activity_result", "keyword"),
+    ("openedr_containment_activity_errno", "integer"),
     ("openedr_requester_uid", "long"),
 ):
     assert fields[key]["type"] == field_type
@@ -696,6 +742,11 @@ test -x "$work/package/usr/bin/all-os-openedr-ima"
 test -x "$work/package/usr/bin/all-os-openedr-launch"
 test -x "$work/package/usr/bin/all-os-openedr-run"
 test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-launch-broker"
+test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-containment-audit"
+cmp packaging/debian/containment-decisions.bt \
+    "$work/package/usr/share/all-os-openedr/containment/decisions.bt"
+cmp packaging/debian/all-os-openedr-containment-audit.service \
+    "$work/package/usr/lib/systemd/system/all-os-openedr-containment-audit.service"
 cmp packaging/debian/all-os-openedr-launch.socket \
     "$work/package/usr/lib/systemd/system/all-os-openedr-launch.socket"
 cmp packaging/debian/all-os-openedr-launch@.service \
@@ -705,7 +756,7 @@ test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
-for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml \
+for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml \
     110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do

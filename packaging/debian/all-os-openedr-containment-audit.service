@@ -1,0 +1,20 @@
+[Unit]
+Description=All OS OpenEDR contained syscall evidence
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/all-os-openedr/all-os-openedr-containment-audit
+LogsDirectory=all-os-openedr-containment-audit
+LogsDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+LimitMEMLOCK=infinity
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

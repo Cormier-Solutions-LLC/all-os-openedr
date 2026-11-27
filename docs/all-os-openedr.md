@@ -217,11 +217,26 @@ Review the local JSON decisions, including SHA-256, catalog ID, disposition, exi
 
 Bubblewrap reports the sandbox supervisor as its namespaces are created. The launcher writes an `executable.sandbox_created` record at that point, followed by the terminal decision with the same `openedr_containment_launch_id` and its own timestamp. A creation record can precede an isolation success, a timeout, or a setup failure. Treat a launch with only a creation record as awaiting a terminal decision. A local policy denial can have only a decision record. Each record has its own event ID so the forwarder retains both. Wazuh uses rule 110123 for creation and rules 110121 and 110122 for blocked and isolated decisions. [Bubblewrap status notifications](https://manpages.debian.org/trixie/bubblewrap/bwrap.1.en.html)
 
-Install OpenSearch template version 12 for new dedicated indices. If the current write index already exists, ensure it has the `data.openedr_containment_launch_id` keyword and `data.openedr_containment_pid_namespace` long mappings, or use a new index before exercising the launch lookup. Search by the launch ID printed by `all-os-openedr-run` or shown on the Wazuh alert. The authenticated manager serves up to four matching records at `GET /v1/containment/<launch-id>`. The lookup returns the caller UID, application alias, digest, outcome, and available sandbox identifiers. It excludes program arguments, paths, and workload I/O. Keep access limited to operators authorized for the dedicated index.
+Install OpenSearch template version 13 for new dedicated indices. If the current write index already exists, ensure it has the `data.openedr_containment_launch_id` keyword and `data.openedr_containment_pid_namespace` long mappings, or use a new index before exercising the launch lookup. Search by the launch ID printed by `all-os-openedr-run` or shown on the Wazuh alert. The authenticated manager serves up to four matching records at `GET /v1/containment/<launch-id>`. The lookup returns the caller UID, application alias, digest, outcome, and available sandbox identifiers. It excludes program arguments, paths, and workload I/O. Keep access limited to operators authorized for the dedicated index.
 
 Enable the [kernel process lifecycle collector](#kernel-process-lifecycle) on the same endpoint and forward both logs under the same Wazuh agent. On an existing write index, add `data.openedr_containment_monitor_pid`, `data.openedr_containment_fork_after_ns`, and `data.openedr_containment_fork_before_ns` as long fields before recording new launches.
 
 Use the same bearer token with `GET /v1/containment/<launch-id>/processes`. The manager finds the supervisor's kernel fork using the endpoint, boot, parent PID, and the launcher’s monotonic fork window. It follows parent process lifetime IDs from that fork and includes observed exec and task exit events. The response contains the root process ID, the available fork records, and the observed lifecycle events. Wait for the creation and fork records to arrive if the lookup reports `creation_unavailable` or `root_unavailable`. An ambiguous match is reported without linking unrelated processes. The response is bounded to 128 processes, eight descendant levels, and 256 exec or exit records. Short-lived processes can be visible through kernel events. Collection gaps and indexing latency can leave parts of the tree unavailable. [Linux process connector timestamps](https://github.com/torvalds/linux/blob/v6.12/drivers/connector/cn_proc.c)
+
+#### Inspect file and socket results from a contained application
+
+On Debian 13 amd64 with kernel Audit, BTF, and syscall tracepoints, install `bpftrace` and enable `all-os-openedr-containment-audit.service` before starting new application requests. Use `systemctl edit all-os-openedr-launch@.service` and add the following broker opt-in.
+
+```ini
+[Service]
+Environment=OPENEDR_CONTAINMENT_AUDIT=1
+```
+
+The delegated broker starts a fresh kernel Audit session under its dedicated account. The collector observes selected native amd64 file opens and socket creation after the sandboxed program starts. It scopes capture to that Audit session and the sandbox mount namespace. The Audit session identifies the managed launch, and the launch record preserves the authenticated requester UID. This works alongside the existing sandbox and seccomp filter. If a kernel security setting prevents tracing or Audit session creation, the launch policy still runs. [Debian bpftrace reference](https://manpages.debian.org/trixie/bpftrace/bpftrace.8.en.html)
+
+Merge the packaged `containment-audit-localfile.xml` into the same Wazuh agent configuration as the launch log. Reserve Wazuh rule 110124. Configure retention for the local audit output and index these fields with template version 13 or add the new properties from that template to the current write index.
+
+Use `GET /v1/containment/<launch-id>/activity` with the management bearer token. Each entry includes the operation, PID, result, and errno for a failure. The lookup returns up to 128 records and reports truncation when the collection limit is reached. Use the result with the launch disposition and process tree. A failed open can indicate that a path was absent in the sandbox. File paths, syscall arguments, and workload data are omitted. An unavailable session or missing events indicate an evidence gap. Stop and disable the collector and remove the service drop-in to stop collection.
 
 #### Use the launcher with a kernel-protected execution volume
 

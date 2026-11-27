@@ -17,7 +17,8 @@ stage=$(mktemp -d)
 trap 'rm -rf -- "$stage"' EXIT
 install -d "$stage/DEBIAN" "$stage/usr/lib/all-os-openedr/all_os_openedr" \
     "$stage/usr/lib/systemd/system" "$stage/usr/share/doc/all-os-openedr" \
-    "$stage/usr/bin" "$stage/usr/share/all-os-openedr/wazuh" "$stage/usr/share/all-os-openedr/samba"
+    "$stage/usr/bin" "$stage/usr/share/all-os-openedr/wazuh" "$stage/usr/share/all-os-openedr/samba" \
+    "$stage/usr/share/all-os-openedr/containment"
 cat > "$stage/DEBIAN/control" <<EOF
 Package: all-os-openedr
 Version: $package_version
@@ -26,7 +27,7 @@ Priority: optional
 Architecture: all
 Maintainer: All OS OpenEDR maintainers <all-os-openedr@users.noreply.github.com>
 Depends: python3 (>= 3.10), init-system-helpers
-Suggests: apparmor, auditd, bubblewrap, nftables, openssh-client, python3-seccomp, rsyslog, samba, samba-vfs-modules, wazuh-agent
+Suggests: apparmor, auditd, bpftrace, bubblewrap, nftables, openssh-client, python3-seccomp, rsyslog, samba, samba-vfs-modules, wazuh-agent
 Description: OpenEDR endpoint detection and protection preview for Linux
  The unprivileged collector writes local JSON process observations for Wazuh.
  Optional controls include IMA appraisal and managed executable containment.
@@ -41,9 +42,13 @@ install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
     "$root/packaging/debian/all-os-openedr-samba-policy" "$stage/usr/bin/"
 install -m 0750 "$root/integrations/wazuh/all-os-openedr-response" "$stage/usr/share/all-os-openedr/wazuh/"
 install -m 0755 "$root/packaging/debian/all-os-openedr-ima-audit" \
+    "$root/packaging/debian/all-os-openedr-containment-audit" \
     "$root/packaging/debian/all-os-openedr-launch-broker" "$stage/usr/lib/all-os-openedr/"
+install -m 0644 "$root/packaging/debian/containment-decisions.bt" \
+    "$stage/usr/share/all-os-openedr/containment/decisions.bt"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/containment-localfile.xml" \
+    "$root/integrations/wazuh/containment-audit-localfile.xml" \
     "$root/integrations/wazuh/ima-dispatch.conf" \
     "$root/integrations/wazuh/ima-localfile.xml" \
     "$root/integrations/wazuh/samba-localfile.xml" \
@@ -57,6 +62,7 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/110110-openedr-execution_rules.xml" "$stage/usr/share/all-os-openedr/wazuh/"
 install -m 0644 "$root/integrations/samba/rsyslog.conf" "$stage/usr/share/all-os-openedr/samba/"
 install -m 0644 "$root/packaging/debian/all-os-openedr.service" \
+    "$root/packaging/debian/all-os-openedr-containment-audit.service" \
     "$root/packaging/debian/all-os-openedr-launch.socket" \
     "$root/packaging/debian/all-os-openedr-launch@.service" \
     "$root/packaging/debian/all-os-openedr-lifecycle.service" \

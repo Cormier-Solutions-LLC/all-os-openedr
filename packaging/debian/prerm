@@ -4,9 +4,11 @@ case "$1" in
     remove|deconfigure)
         if [ -d /run/systemd/system ]; then
             deb-systemd-invoke stop all-os-openedr.service all-os-openedr-lifecycle.service \
-                all-os-openedr-file-provenance.service all-os-openedr-executable.service all-os-openedr-launch.socket
+                all-os-openedr-file-provenance.service all-os-openedr-executable.service \
+                all-os-openedr-launch.socket all-os-openedr-containment-audit.service
         fi
         deb-systemd-helper disable all-os-openedr.service all-os-openedr-lifecycle.service \
-            all-os-openedr-file-provenance.service all-os-openedr-executable.service all-os-openedr-launch.socket >/dev/null
+            all-os-openedr-file-provenance.service all-os-openedr-executable.service \
+            all-os-openedr-launch.socket all-os-openedr-containment-audit.service >/dev/null
         ;;
 esac
