@@ -219,6 +219,7 @@ class FanotifyFilesystem:
             "openedr_boot_id": self.boot_id,
             "openedr_stream_id": self.stream_id,
             "openedr_file_scope": visible_text(os.fsencode(self.filesystem)),
+            "openedr_file_mount_device": f"{os.major(self.device)}:{os.minor(self.device)}",
         }
 
     def gap(self, reason):

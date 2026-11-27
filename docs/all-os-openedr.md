@@ -53,6 +53,21 @@ Add the [file provenance localfile stanza](../integrations/wazuh/file-provenance
 
 Fanotify can coalesce operations. Rows with the same notification ID share one kernel report and observation time. Use that ID when counting notifications or interpreting operation order. Full-file read and write hashing, mapped I/O coverage, and remote changes on network shares need additional sensors. [Linux fanotify event semantics](https://man7.org/linux/man-pages/man7/fanotify.7.html)
 
+### Investigate removable storage
+
+On Debian, install `python3-pyudev` and enable the removable storage collector.
+
+```sh
+sudo apt install python3-pyudev
+sudo systemctl enable --now all-os-openedr-removable-storage.service
+```
+
+The collector records USB block disks, other disks Linux flags as removable, and their partitions. It reports attachment, removal, and mounts visible in the service's mount namespace. Startup snapshots use `device.present` and `device.mount_present`. A hash of the media's reported serial or WWN identifies it across connections. Serial-less media uses an attachment-scoped ID. Treat the identity as reported inventory data when investigating a device. Mount observations reflect the current mount table, so short transitions can coalesce.
+
+Add the [removable storage localfile stanza](../integrations/wazuh/removable-storage-localfile.xml) to the endpoint and reload the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Rule `110131` records device and mount observations. Rule `110132` records lost monitor continuity. Apply OpenSearch template version 18 to new dedicated indices or add the corresponding mappings to active ones.
+
+Use file provenance on a mounted removable volume to trace its activity. In the index, find the device or its filesystem UUID and locate its mount window. Filter file events by the same Wazuh `agent.id` and `openedr_boot_id`, match `openedr_file_mount_device` to `openedr_device_number`, and match `openedr_file_scope` to `openedr_device_mountpoint`. Use the mount and unmount times to bound the correlation because Linux can reuse block numbers. Apply the same media identity to follow the device across reconnections. [Debian mount information](https://manpages.debian.org/trixie/manpages/proc_pid_mountinfo.5.en.html) · [udev device events](https://www.kernel.org/pub/linux/utils/kernel/hotplug/udev/udev.html)
+
 ### Identify files opened for execution
 
 Enable the optional executable collector for a chosen local filesystem. Select its mount root. For example, use `/` to observe executables on the root filesystem. Separate filesystems such as a separately mounted `/usr` need their own watch. The kernel supplies an open descriptor for each reported object. The collector hashes up to 32 MiB from that descriptor and records SHA-256, size, file format, filesystem device and inode, and a path when available. Actor fields include the kernel PID and, when available, a separate process snapshot from the accompanying pidfd. The service drops all effective capabilities after installing the watch. [Linux fanotify event descriptors](https://man7.org/linux/man-pages/man7/fanotify.7.html)
@@ -97,7 +112,7 @@ sudo all-os-openedr-executable-policy status
 
 The updater verifies the exact bytes and serializes approved writes. The active file carries its revision through a reboot. Leave the active file under the updater's control to preserve replay protection. The running sensor reloads the catalog when the file changes. Subsequent broker decisions and executable observations report the same catalog digest. Signed verdicts apply to the managed launcher. Kernel IMA approval has its own controls and procedure.
 
-The command writes applied or rejected receipts to `/var/log/all-os-openedr-policy/changes.jsonl`. Use `sudo all-os-openedr-executable-policy status --record` to record the current revision if the original receipt was lost. Create the log with that command before enabling the packaged [Wazuh localfile stanza](../integrations/wazuh/policy-localfile.xml). Reload the [Wazuh rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Rule `110129` records policy receipts and `110130` alerts on rejected updates. Apply OpenSearch template version 17 to new dedicated indices or add its policy fields to the active index.
+The command writes applied or rejected receipts to `/var/log/all-os-openedr-policy/changes.jsonl`. Use `sudo all-os-openedr-executable-policy status --record` to record the current revision if the original receipt was lost. Create the log with that command before enabling the packaged [Wazuh localfile stanza](../integrations/wazuh/policy-localfile.xml). Reload the [Wazuh rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Rule `110129` records policy receipts and `110130` alerts on rejected updates. Apply the current OpenSearch template to new dedicated indices or add its policy fields to the active index.
 
 ### Kernel execution detection with Wazuh
 
