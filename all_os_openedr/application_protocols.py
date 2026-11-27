@@ -58,8 +58,22 @@ def request_target(raw, host):
     return {"openedr_request_path": path, **({"openedr_request_host": host} if host else {})}
 
 
+def upgrade_protocols(values):
+    if len(values) > 32:
+        return frozenset()
+    protocols = set()
+    for value in values:
+        name, slash, version = value.partition(b"/")
+        if len(value) > 128 or not TOKEN.fullmatch(name) or (slash and not TOKEN.fullmatch(version)):
+            return frozenset()
+        protocols.add(name.lower() + slash + version)
+    return frozenset(protocols)
+
+
 def http_fields(fields):
-    length, transfer, host, upgraded = None, None, None, False
+    length, transfer, host = None, None, None
+    upgrades = []
+    connection_upgrade = False
     for field in fields.split(b"\r\n") if fields else ():
         name, separator, content = field.partition(b":")
         if not separator or not TOKEN.fullmatch(name):
@@ -77,12 +91,14 @@ def http_fields(fields):
                     raise ValueError("Ambiguous HTTP transfer coding")
                 transfer = [coding.strip() for coding in content.lower().split(b",")]
             case b"upgrade":
-                upgraded = bool(content)
+                upgrades.extend(value for item in content.split(b",") if (value := item.strip(b" \t")))
+            case b"connection":
+                connection_upgrade |= any(value.strip(b" \t").lower() == b"upgrade" for value in content.split(b","))
     if transfer is not None and (
         length is not None or transfer[-1] != b"chunked" or transfer.count(b"chunked") != 1 or not all(transfer)
     ):
         raise ValueError("Unsupported HTTP body framing")
-    return length, transfer, host, upgraded
+    return length, transfer, host, upgrade_protocols(upgrades) if connection_upgrade else frozenset()
 
 
 class HTTPStream:
@@ -185,7 +201,7 @@ class HTTPRequests:
         length, transfer, host, offered_upgrade = http_fields(headers)
         if len(self.pending) >= 64:
             raise ValueError("HTTP request queue exceeds the observation bound")
-        self.pending.append((method, offered_upgrade))
+        self.pending.append((method, offered_upgrade if first.endswith(b" HTTP/1.1") else frozenset()))
         self.streams[0].body(length, transfer)
         if method in {b"GET", b"POST"}:
             fields = request_target(target, host) or {"openedr_request_path_scope": "unavailable"}
@@ -201,8 +217,10 @@ class HTTPRequests:
         if status < 200 and status != 101:
             return None
         method, offered_upgrade = self.pending.popleft()
-        if status == 101 and (not offered_upgrade or not http_fields(headers)[3]):
-            raise ValueError("Unmatched HTTP upgrade")
+        if status == 101:
+            selected = http_fields(headers)[3]
+            if not first.startswith(b"HTTP/1.1 ") or not selected or not selected <= offered_upgrade:
+                raise ValueError("Unmatched HTTP upgrade")
         if status == 101 or (method == b"CONNECT" and 200 <= status < 300):
             for stream in self.streams:
                 stream.stop()

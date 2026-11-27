@@ -628,14 +628,25 @@ http.skip(0, len(bad_body) - 2)
 framed = format(len(bad_body), "x").encode() + b"\r\n" + bad_body + b"\r\n0\r\nX-Ignored: secret\r\n\r\n"
 assert [e["openedr_request_path"] for e in http.feed(0, chunked + framed + tail)] == ["/chunk", "/last"]
 http = HTTPRequests()
-assert len(list(http.feed(0, b"GET /switch HTTP/1.1\r\nUpgrade: example\r\n\r\n"))) == 1
+offer = b"GET /switch HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: example, Demo/v1\r\n\r\n"
+assert len(list(http.feed(0, offer))) == 1
 assert list(http.feed(1, b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nx")) == []
 assert list(http.feed(1, b"yz")) == []
 assert [e["openedr_request_path"] for e in http.feed(0, tail)] == ["/last"]
 assert list(http.feed(1, b"HTTP/1.1 204 No Content\r\n\r\n")) == []
-assert len(list(http.feed(0, b"GET /switch HTTP/1.1\r\nUpgrade: example\r\n\r\n"))) == 1
-assert list(http.feed(1, b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: example\r\n\r\n")) == []
+assert len(list(http.feed(0, offer))) == 1
+assert list(http.feed(1, b"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: demo/v1\r\n\r\n")) == []
 assert list(http.feed(0, tail)) == []
+for selected in (b"Connection: upgrade\r\nUpgrade: different", b"Connection: upgrade\r\nUpgrade: demo/v2",
+                 b"Upgrade: example"):
+    http = HTTPRequests()
+    assert len(list(http.feed(0, offer))) == 1
+    try:
+        list(http.feed(1, b"HTTP/1.1 101 Switching Protocols\r\n" + selected + b"\r\n\r\n"))
+    except ValueError as error:
+        assert str(error) == "Unmatched HTTP upgrade"
+    else:
+        raise AssertionError("Accepted an unmatched HTTP upgrade")
 try:
     list(HTTPRequests().feed(0, b"POST /ambiguous HTTP/1.1\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n"))
 except ValueError:
