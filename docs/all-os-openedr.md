@@ -232,6 +232,17 @@ The launcher checks the mount, UUID, and opened file's device before it runs the
 
 After each deployment or boot-policy change, verify on the endpoint that a benign unsigned file on the volume is denied when launched directly and runs in isolation through the managed service. Verify that the enrolled service blocks execution when the volume is unavailable or replaced. This option validates the volume and its local approval attribute. The boot-time IMA policy supplies the direct-execution enforcement.
 
+#### Protect interpreter reads on the enrolled volume
+
+Use `--launcher-uid` when ordinary file opens should also require IMA approval. Set `User=openedr-workload` in the managed service and reserve that fixed non-root UID for the administrator-managed launcher. Keep interactive logins and delegation to that account disabled. Stage files and apply approvals as root. Ordinary non-root processes need valid IMA approval to open a file for reading, including when passing it to an interpreter. The launcher account can read an unsigned candidate and execute its snapshot inside the sandbox. IMA still appraises direct execution and executable mappings for that account.
+
+```sh
+sudo all-os-openedr-ima policy --filesystem /srv/openedr-exec \
+    --launcher-uid "$(id -u openedr-workload)" > openedr-ima-policy
+```
+
+Review and load the generated policy using the IMA procedure above. This covers file reads throughout the selected filesystem, so keep ordinary data and application state on other volumes. Apply it at boot before user services acquire file descriptors. Verify that an ordinary account can open an approved fixture, that its shell cannot read an unsigned fixture, and that the managed service still isolates the unsigned fixture. The kernel records appraisal failures for the existing Wazuh rule `110119`.
+
 ### Protect local directories and mounted SMB shares
 
 Pass `--protect-tree DIR` to grant recursive reads and have AppArmor block and audit writes, appends, and hard links through the protected paths. Pass `--write-directory DIR` to allow creation, updates, and renames of files directly under a separate existing directory. The writable rule leaves subdirectories outside its scope. AppArmor matches canonical paths and applies the profile to the managed workload and its descendants. [Debian AppArmor policy syntax](https://manpages.debian.org/trixie/apparmor/apparmor.d.5.en.html)
