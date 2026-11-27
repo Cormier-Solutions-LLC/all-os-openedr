@@ -16,6 +16,15 @@ EVENT_FIELDS = (
     "openedr_source", "openedr_schema", "openedr_event", "openedr_event_id",
     "openedr_host", "openedr_observed_at", "openedr_pid", "openedr_process",
 )
+CONTAINMENT_FIELDS = EVENT_FIELDS + (
+    "openedr_boot_id", "openedr_requester_uid", "openedr_executable_sha256",
+    "openedr_executable_verdict", "openedr_containment_application",
+    "openedr_containment_launch_id", "openedr_containment_pid",
+    "openedr_containment_pid_namespace", "openedr_containment_decision",
+    "openedr_containment_reason", "openedr_containment_exit_code",
+)
+CONTAINMENT_EVENTS = ("executable.sandbox_created", "executable.launch_decision")
+CONTAINMENT_ROUTE = re.compile(r"/v1/containment/([0-9a-f]{32})")
 MAX_RESPONSE = 1024 * 1024
 
 
@@ -39,13 +48,24 @@ class Index:
         context = ssl.create_default_context(cafile=os.environ.get("OPENSEARCH_CA_FILE"))
         self.client = build_opener(ProxyHandler({}), NoRedirects(), HTTPSHandler(context=context))
 
-    def search(self, size):
+    def search(self, size, *, launch_id=None):
+        fields = EVENT_FIELDS if launch_id is None else CONTAINMENT_FIELDS
         query = {
             "size": size,
-            "_source": [f"data.{field}" for field in EVENT_FIELDS],
+            "_source": [f"data.{field}" for field in fields],
             "query": {"match_phrase": {"data.openedr_source": "all-os-openedr"}},
         }
-        if size:
+        if launch_id is not None:
+            query["query"] = {"bool": {"filter": [
+                query["query"],
+                {"term": {"data.openedr_containment_launch_id": launch_id}},
+                {"terms": {"data.openedr_event": CONTAINMENT_EVENTS}},
+            ]}}
+            query["sort"] = [
+                {"data.openedr_observed_at": {"order": "asc", "unmapped_type": "date"}},
+                {"data.openedr_event": {"order": "desc", "unmapped_type": "keyword"}},
+            ]
+        elif size:
             query["sort"] = [{"timestamp": {"order": "desc", "unmapped_type": "date"}}]
         options = urlencode({"ignore_unavailable": "true", "allow_partial_search_results": "false"})
         request = Request(
@@ -63,8 +83,12 @@ class Index:
             raise ValueError("OpenSearch search timed out")
         for hit in payload["hits"]["hits"]:
             event = hit["_source"].get("data", {})
-            if event.get("openedr_source") == "all-os-openedr":
-                records.append({field: event[field] for field in EVENT_FIELDS if field in event})
+            if event.get("openedr_source") != "all-os-openedr":
+                continue
+            if launch_id is not None and (event.get("openedr_containment_launch_id") != launch_id
+                                          or event.get("openedr_event") not in CONTAINMENT_EVENTS):
+                continue
+            records.append({field: event[field] for field in fields if field in event})
         return records
 
 
@@ -89,20 +113,25 @@ class Manager(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             self.reply(200, {"status": "ok"})
             return
-        if self.path not in ("/readyz", "/v1/events"):
+        containment = CONTAINMENT_ROUTE.fullmatch(self.path)
+        if self.path not in ("/readyz", "/v1/events") and containment is None:
             self.reply(404)
             return
-        if self.path == "/v1/events":
+        ready = self.path == "/readyz"
+        if not ready:
             provided = self.headers.get("Authorization", "").encode("utf-8")
             if not hmac.compare_digest(provided, self.server.authorization):
                 self.reply(401)
                 return
         try:
-            events = self.server.index.search(0 if self.path == "/readyz" else 25)
+            if containment is None:
+                events = self.server.index.search(0 if ready else 25)
+            else:
+                events = self.server.index.search(4, launch_id=containment[1])
         except (AttributeError, OSError, URLError, KeyError, TypeError, ValueError):
             self.reply(503, {"status": "unavailable"})
             return
-        self.reply(200, {"events": events} if self.path == "/v1/events" else {"status": "ready"})
+        self.reply(200, {"status": "ready"} if ready else {"events": events})
 
 
 def main():
