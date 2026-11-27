@@ -1,5 +1,6 @@
 // Debian 13 kernel BTF. Arguments are the fixed and removable kernel dev_t
 // values and the monitored mount namespace. Sampled payload bytes stay in BPF.
+// Emit the fixed-size path buffers as hex to preserve all filename bytes.
 
 kfunc:vfs_read
 {
@@ -104,11 +105,11 @@ kretfunc:vfs_write
     $source = @read_sample[tid];
     if (retval > 0 && (uint64)retval == $source.4 && args.pos && @out_path[tid] != "") {
         $inode = args.file->f_inode;
-        printf("buffered\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\n//\n%s\n",
+        printf("buffered\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%rh\t%rh\n",
             nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
             $source.0, $source.1, $source.2, $source.5,
             $inode->i_sb->s_dev, $inode->i_ino, $inode->i_generation, *args.pos - retval, retval,
-            @read_path[tid], @out_path[tid]);
+            buf(@read_path[tid], 256), buf(@out_path[tid], 256));
     }
     delete(@write_file[tid]);
     delete(@out_path[tid]);
@@ -123,11 +124,11 @@ kretfunc:vfs_copy_file_range
     if (retval > 0 && @in_path[tid] != "" && @out_path[tid] != "") {
         $in = args.file_in->f_inode;
         $out = args.file_out->f_inode;
-        printf("copy_file_range\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\n//\n%s\n",
+        printf("copy_file_range\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%rh\t%rh\n",
             nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
             $in->i_sb->s_dev, $in->i_ino, $in->i_generation, args.pos_in,
             $out->i_sb->s_dev, $out->i_ino, $out->i_generation, args.pos_out, retval,
-            @in_path[tid], @out_path[tid]);
+            buf(@in_path[tid], 256), buf(@out_path[tid], 256));
     }
     delete(@range_files[tid]);
     delete(@in_path[tid]);
@@ -141,11 +142,11 @@ kretfunc:do_splice_direct
     $out = args.out->f_inode;
     if ((uint64)args.in == @send_source[tid] && (uint64)args.out == @send_destination[tid] &&
         $in->i_sb->s_dev != $out->i_sb->s_dev && @in_path[tid] != "" && @out_path[tid] != "") {
-        printf("sendfile\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\n//\n%s\n",
+        printf("sendfile\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%rh\t%rh\n",
             nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
             $in->i_sb->s_dev, $in->i_ino, $in->i_generation, *args.ppos - retval,
             $out->i_sb->s_dev, $out->i_ino, $out->i_generation, *args.opos - retval, retval,
-            @in_path[tid], @out_path[tid]);
+            buf(@in_path[tid], 256), buf(@out_path[tid], 256));
     }
 }
 

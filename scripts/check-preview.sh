@@ -48,7 +48,7 @@ from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
-from all_os_openedr.removable_copies import PATH_SEPARATOR, TransferLog, TransferTrace, Volume
+from all_os_openedr.removable_copies import PATH_BYTES, TransferLog, TransferTrace, Volume
 from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
@@ -527,29 +527,39 @@ assert lifecycle_rules.find("rule[@id='110134']") is not None
 fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 8388609, "fixed-uuid", 101)
 usb_volume = Volume(Mount(52, "8:2", "/srv/USB volume", "ext4", "/dev/sdb1"), 8388610, "usb-uuid", 102, "media-id")
 transfer = TransferTrace(fixed_volume, usb_volume, "boot", "host")
-copy_line = ("buffered\t100\t10\t1001\t1000\t8388609\t19\t8\t0\t8388610\t28\t7\t4\t64"
-             f"\t/srv/fixed/input{PATH_SEPARATOR}/srv/USB volume/output\n")
+copy_header = "buffered\t100\t10\t1001\t1000\t8388609\t19\t8\t0\t8388610\t28\t7\t4\t64"
+fixed_input = b"/srv/fixed/input"
+usb_output = b"/srv/USB volume/output"
+
+def transfer_line(header, source, destination):
+    return header + "\t" + "\t".join(path.ljust(PATH_BYTES, b"\0").hex(" ") for path in (source, destination)) + "\n"
+
+copy_line = transfer_line(copy_header, fixed_input, usb_output)
 record = transfer.receive(json.dumps({"type": "printf", "data": copy_line}))
 assert record["openedr_event"] == "file.copy_inferred"
 assert record["openedr_copy_direction"] == "to_removable" and record["openedr_copy_bytes"] == 64
 assert record["openedr_copy_removable_uuid"] == "usb-uuid" and record["openedr_device_id"] == "media-id"
 assert record["openedr_copy_source_id"] != record["openedr_copy_destination_id"]
 assert record["openedr_copy_source_offset"] == 0 and record["openedr_copy_destination_offset"] == 4
-reverse = ("copy_file_range\t110\t10\t1001\t1000\t8388610\t28\t7\t4\t8388609\t19\t8\t0\t64"
-           f"\t/srv/USB volume/output{PATH_SEPARATOR}/srv/fixed/input\n")
+reverse = transfer_line("copy_file_range\t110\t10\t1001\t1000\t8388610\t28\t7\t4\t8388609\t19\t8\t0\t64",
+                        usb_output, fixed_input)
 reverse_record = transfer.parse_transfer(reverse)
 assert reverse_record["openedr_event"] == "file.copy_observed"
 assert reverse_record["openedr_copy_direction"] == "from_removable"
 assert reverse_record["openedr_copy_actor_id"] == record["openedr_copy_actor_id"]
 assert reverse_record["openedr_copy_destination_id"] == record["openedr_copy_source_id"]
-assert transfer.parse_transfer(copy_line.replace("/srv/fixed/input", "/srv/fixed-bypass/input")) is None
-assert transfer.parse_transfer(copy_line.replace("/srv/fixed/input", "/srv/fixed/../unrelated/input")) is None
-assert transfer.parse_transfer(copy_line.replace("8388610", "8388609")) is None
-unusual = copy_line.replace("input", "in\tput").replace("output", "out\nput\n")
+assert transfer.parse_transfer(transfer_line(copy_header, b"/srv/fixed-bypass/input", usb_output)) is None
+assert transfer.parse_transfer(transfer_line(copy_header, b"/srv/fixed/../unrelated/input", usb_output)) is None
+assert transfer.parse_transfer(transfer_line(copy_header.replace("8388610", "8388609"), fixed_input, usb_output)) is None
+unusual = transfer_line(copy_header, b"/srv/fixed/in\tput", b"/srv/USB volume/out\nput\n")
 paths = transfer.receive(json.dumps({"type": "printf", "data": unusual}).encode())
 assert paths["openedr_copy_source_path"] == "/srv/fixed/in\tput"
 assert paths["openedr_copy_destination_path"] == "/srv/USB volume/out\nput\n"
-assert transfer.parse_transfer(copy_line.replace(PATH_SEPARATOR, "\t")) is None
+raw_path = b"/srv/fixed/in\xffput"
+binary_name = transfer.parse_transfer(transfer_line(copy_header, raw_path, usb_output))
+assert binary_name["openedr_copy_source_path"] == r"/srv/fixed/in\xffput"
+assert bytes.fromhex(binary_name["openedr_copy_source_path_bytes"]) == raw_path
+assert transfer.parse_transfer(copy_line.rsplit("\t", 1)[0] + "\t2f 00\n") is None
 assert transfer.receive(b'{"type":"lost_events","data":2}')["openedr_gap_reason"] == "copy_trace_kernel_events_lost"
 with patch("all_os_openedr.removable_copies.unique_mount_id", side_effect=[101, 102]):
     assert transfer.active()
