@@ -78,6 +78,8 @@ Merge the packaged `removable-copies-localfile.xml` into the Wazuh agent configu
 
 The tracer limits the normal event stream to 64 records per second and emits a separate gap when it drops records. It retains the current 16 MiB JSON log and three rotated files. Forward alerts promptly when you need longer retention.
 
+The tracer preserves paths through Linux's 4 KiB pathname buffer. A transfer whose kernel path cannot be resolved produces a path collection gap. The alert includes the original path bytes in hex for filenames outside UTF-8.
+
 ### Identify files opened for execution
 
 Enable the optional executable collector for a chosen local filesystem. Select its mount root. For example, use `/` to observe executables on the root filesystem. Separate filesystems such as a separately mounted `/usr` need their own watch. The kernel supplies an open descriptor for each reported object. The collector hashes up to 32 MiB from that descriptor and records SHA-256, size, file format, filesystem device and inode, and a path when available. Actor fields include the kernel PID and, when available, a separate process snapshot from the accompanying pidfd. The service drops all effective capabilities after installing the watch. [Linux fanotify event descriptors](https://man7.org/linux/man-pages/man7/fanotify.7.html)

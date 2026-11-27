@@ -559,7 +559,10 @@ raw_path = b"/srv/fixed/in\xffput"
 binary_name = transfer.parse_transfer(transfer_line(copy_header, raw_path, usb_output))
 assert binary_name["openedr_copy_source_path"] == r"/srv/fixed/in\xffput"
 assert bytes.fromhex(binary_name["openedr_copy_source_path_bytes"]) == raw_path
-assert transfer.parse_transfer(copy_line.rsplit("\t", 1)[0] + "\t2f 00\n") is None
+assert (transfer.parse_transfer(copy_line.rsplit("\t", 1)[0] + "\t2f 00\n")["openedr_gap_reason"]
+        == "copy_trace_path_unavailable")
+long_path = b"/srv/fixed/" + b"nested-directory/" * 20 + b"source"
+assert transfer.parse_transfer(transfer_line(copy_header, long_path, usb_output))["openedr_copy_source_path"] == long_path.decode()
 assert transfer.receive(b'{"type":"lost_events","data":2}')["openedr_gap_reason"] == "copy_trace_kernel_events_lost"
 with patch("all_os_openedr.removable_copies.unique_mount_id", side_effect=[101, 102]):
     assert transfer.active()

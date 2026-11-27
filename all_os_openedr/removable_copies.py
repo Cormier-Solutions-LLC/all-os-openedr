@@ -25,8 +25,8 @@ from .removable_storage import Mount, device_evidence, mounts_from
 
 PROGRAM = "/usr/share/all-os-openedr/storage/removable-copies.bt"
 OUTPUT = Path("/var/log/all-os-openedr-removable-copies/events.jsonl")
-MAX_LINE = 8192
-PATH_BYTES = 256
+MAX_LINE = 32 * 1024
+PATH_BYTES = 4096
 MAX_EVENTS_PER_SECOND = 64
 LOG_MAX_BYTES = 16 * 1024 * 1024
 LOG_BACKUPS = 3
@@ -156,12 +156,15 @@ class TransferTrace:
         source_volume, dest_volume = self.volumes.get(source), self.volumes.get(dest)
         if (
             source_volume is None or dest_volume is None or source == dest
-            or not source_volume.contains(source_path) or not dest_volume.contains(dest_path)
             or not all(0 < value < 2**63 for value in (stamp, start, source_ino, dest_ino, size))
             or not 0 < pid < 2**31 or uid >= 2**32
             or max(source_offset, dest_offset) + size >= 2**63
             or max(source_gen, dest_gen) >= 2**32
         ):
+            return None
+        if not source_path or not dest_path:
+            return self.gap("copy_trace_path_unavailable")
+        if not source_volume.contains(source_path) or not dest_volume.contains(dest_path):
             return None
         record = {
             **self.event(METHODS[fields[0]]),
