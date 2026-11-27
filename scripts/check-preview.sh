@@ -35,7 +35,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
-from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_shell
+from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
@@ -627,24 +627,35 @@ for header, expected in (
     (b"#!/bin/bash -c\n", None),
     (b"#!/bin/bash\r\n", None),
     (b"#!/bin/sh\x00\n", None),
-    (b"#!/usr/bin/python3\n", None),
+    (b"#!/usr/bin/python3\n", ("python3.13", ())),
+    (b"#!/usr/bin/env python3\n", ("python3.13", ())),
+    (b"#!/usr/bin/env -S python3.13 -u\n", ("python3.13", ("-u",))),
+    (b"#!/usr/bin/env python3 -u\n", None),
+    (b"#!/usr/bin/python3 -c\n", None),
+    (b"#!/usr/bin/python3 -m\n", None),
+    (b"#!/usr/local/bin/python3\n", None),
+    (b"#!/usr/bin/python3.12\n", None),
     (b"#!/bin/sh" + b" " * 250 + b"\n", None),
     (b"#!/bin/sh", None),
 ):
     snapshot = BytesIO(header)
     snapshot.seek(0, 2)
-    assert script_shell(snapshot) == expected, header
+    assert script_runtime(snapshot) == expected, header
 policy = {
     "schema": 1, "filesystem": "/srv/execution", "uuid": "a431703b-1fb1-43c3-9344-4cfac8e9ef6c",
     "catalog": "/etc/verdicts.json",
     "applications": {"fixture": {"program": "tools/fixture", "uids": [1000], "arguments": ["fixed"]}},
 }
-assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"], [], [])
+empty_download = {"uids": [], "libraries": [], "python": False, "interactive": True, "arguments": ()}
+assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"], empty_download)
 download_policy = {"schema": 1, "catalog": "/etc/verdicts.json", "download_uids": [1000]}
-assert parse_policy(download_policy) == (None, None, "/etc/verdicts.json", {}, [1000], [])
+assert parse_policy(download_policy) == (None, None, "/etc/verdicts.json", {}, {**empty_download, "uids": [1000]})
 library = "/usr/lib/x86_64-linux-gnu/libjq.so.1"
-assert parse_policy({**download_policy, "download_libraries": [library]})[-1] == [library]
+assert parse_policy({**download_policy, "download_libraries": [library], "download_python": True})[-1] == {
+    **empty_download, "uids": [1000], "libraries": [library], "python": True,
+}
 for invalid in ({"download_uids": [True]}, {"download_uids": [0]}, {"filesystem": "/srv/execution"},
+                {"download_python": "true"},
                 {"download_libraries": [library, library]}, {"download_libraries": library},
                 {"download_libraries": ["/etc/libsecret.so.1"]},
                 {"download_libraries": ["/usr/lib/x86_64-linux-gnu/libc.so.6"]}):
@@ -655,7 +666,7 @@ for invalid in ({"download_uids": [True]}, {"download_uids": [0]}, {"filesystem"
     else:
         raise AssertionError("Accepted invalid download policy")
 for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]},
-               {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}, {"export": 1},
+               {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}, {"export": 1}, {"python": 1},
                {"libraries": ["/usr/lib/x86_64-linux-gnu/../x86_64-linux-gnu/libjq.so.1"]},
                {"libraries": ["libjq.so.1"]}, {"libraries": ["/usr/lib/x86_64-linux-gnu"]},
                {"libraries": [f"/usr/lib/x86_64-linux-gnu/libexample{i}.so.1" for i in range(17)]}):
@@ -776,7 +787,7 @@ with peer, worker:
 peer, worker = socket.socketpair()
 with peer, worker:
     send_message(peer, {"application": "fixture"})
-    empty_policy = (*parse_policy(policy)[:3], {}, [], [])
+    empty_policy = (*parse_policy(policy)[:3], {}, empty_download)
     with patch("all_os_openedr.launch_broker.read_policy", return_value=empty_policy), \
             patch("all_os_openedr.launch_broker.emit") as emit, patch("all_os_openedr.launch_broker.launch") as launch_app:
         service(worker)
@@ -785,7 +796,8 @@ with peer, worker:
         launch_app.assert_not_called()
 for request in ({"download": "path"}, {"download": True, "application": "fixture"},
                 {"download": True, "export": True}, {"download": True, "path": "/host/file"},
-                {"download": True, "libraries": [library]}, {"application": "fixture", "libraries": [library]}):
+                {"download": True, "libraries": [library]}, {"application": "fixture", "libraries": [library]},
+                {"download": True, "python": True}, {"application": "fixture", "python": True}):
     peer, worker = socket.socketpair()
     with peer, worker:
         send_message(peer, request)
@@ -898,6 +910,7 @@ test -x "$work/package/usr/bin/all-os-openedr-ima"
 test -x "$work/package/usr/bin/all-os-openedr-launch"
 test -x "$work/package/usr/bin/all-os-openedr-run"
 test -f "$work/package/usr/share/applications/all-os-openedr-contain-download.desktop"
+grep -q 'text/x-python;' "$work/package/usr/share/applications/all-os-openedr-contain-download.desktop"
 test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-launch-broker"
 test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-containment-audit"
 cmp packaging/debian/containment-decisions.bt \

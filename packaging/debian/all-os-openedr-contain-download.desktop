@@ -4,4 +4,4 @@ Name=Open in All OS OpenEDR Containment
 Exec=/usr/bin/all-os-openedr-run --interactive --download %f
 Terminal=true
 NoDisplay=true
-MimeType=application/x-executable;application/x-pie-executable;application/x-shellscript;
+MimeType=application/x-executable;application/x-pie-executable;application/x-shellscript;text/x-python;

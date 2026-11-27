@@ -44,16 +44,30 @@ BASH_AMD64 = (
     ("/usr/lib/x86_64-linux-gnu/libtinfo.so.6", "/lib/x86_64-linux-gnu/libtinfo.so.6"),
 )
 BASE_RUNTIME_NAMES = {Path(source).name for source, _ in (*GLIBC_AMD64, *BASH_AMD64)}
-SHELL_PATHS = {
+PYTHON_EXECUTABLE = Path("/usr/bin/python3.13")
+PYTHON_STDLIB = Path("/usr/lib/python3.13")
+PYTHON_LIBRARIES = (
+    str(DEBIAN_AMD64_LIBRARIES / "libexpat.so.1"),
+    str(DEBIAN_AMD64_LIBRARIES / "libz.so.1"),
+)
+SCRIPT_PATHS = {
     b"/bin/sh": "dash",
     b"/usr/bin/sh": "dash",
     b"/bin/dash": "dash",
     b"/usr/bin/dash": "dash",
     b"/bin/bash": "bash",
     b"/usr/bin/bash": "bash",
+    b"/bin/python3": "python3.13",
+    b"/usr/bin/python3": "python3.13",
+    b"/bin/python3.13": "python3.13",
+    b"/usr/bin/python3.13": "python3.13",
 }
-SHELL_NAMES = {b"sh": "dash", b"dash": "dash", b"bash": "bash"}
-SHELL_OPTIONS = (b"-e", b"-u", b"-eu", b"-ue")
+SCRIPT_NAMES = {b"sh": "dash", b"dash": "dash", b"bash": "bash", b"python3": "python3.13", b"python3.13": "python3.13"}
+SCRIPT_OPTIONS = {
+    "dash": (b"-e", b"-u", b"-eu", b"-ue"),
+    "bash": (b"-e", b"-u", b"-eu", b"-ue"),
+    "python3.13": (b"-u",),
+}
 
 
 def write_filter(target):
@@ -169,7 +183,7 @@ def run_backend(command, descriptors, status_fd, timeout, on_created, *, streams
             observer.join()
 
 
-def script_shell(snapshot):
+def script_runtime(snapshot):
     snapshot.seek(0)
     line = snapshot.readline(256)
     if not line.startswith(b"#!") or not line.endswith(b"\n") or any(
@@ -187,12 +201,12 @@ def script_shell(snapshot):
             interpreter, options = options[0], []
         else:
             return None
-        shell = SHELL_NAMES.get(interpreter)
+        runtime = SCRIPT_NAMES.get(interpreter)
     else:
-        shell = SHELL_PATHS.get(interpreter)
-    if shell is None or len(options) > 1 or any(option not in SHELL_OPTIONS for option in options):
+        runtime = SCRIPT_PATHS.get(interpreter)
+    if runtime is None or len(options) > 1 or any(option not in SCRIPT_OPTIONS[runtime] for option in options):
         return None
-    return shell, tuple(option.decode("ascii") for option in options)
+    return runtime, tuple(option.decode("ascii") for option in options)
 
 
 def valid_runtime_libraries(values):
@@ -223,12 +237,30 @@ def runtime_library_bindings(libraries):
     return bindings
 
 
+def python_runtime_bindings():
+    for path in (PYTHON_EXECUTABLE, PYTHON_STDLIB):
+        if path.resolve(strict=True) != path:
+            raise ValueError("The Debian Python runtime must use canonical paths")
+        trusted_file(path)
+    if not PYTHON_EXECUTABLE.is_file() or not PYTHON_STDLIB.is_dir():
+        raise ValueError("The Debian Python runtime requires an interpreter and standard library")
+    return ["--ro-bind", str(PYTHON_EXECUTABLE), str(PYTHON_EXECUTABLE),
+            "--ro-bind", str(PYTHON_STDLIB), str(PYTHON_STDLIB)]
+
+
 def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, document=None, export=None, cancelled=None,
             libraries=()):
     bindings = []
+    python = script is not None and script[0] == "python3.13"
+    if python:
+        try:
+            bindings = python_runtime_bindings()
+        except (OSError, ValueError, RuntimeError):
+            return LAUNCH_FAILED, "python_runtime_unavailable", None
+        libraries = dict.fromkeys((*PYTHON_LIBRARIES, *libraries))
     if libraries:
         try:
-            bindings = runtime_library_bindings(libraries)
+            bindings.extend(runtime_library_bindings(libraries))
         except (OSError, ValueError, RuntimeError):
             return LAUNCH_FAILED, "runtime_library_unavailable", None
     snapshot.flush()
@@ -249,7 +281,10 @@ def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, d
         shell_setup = []
         permissions = "0555"
         entrypoint = [PROGRAM]
-        if script is not None:
+        if python:
+            permissions = "0444"
+            entrypoint = [str(PYTHON_EXECUTABLE), "-I", "-S", "-B", "-u", "--", PROGRAM]
+        elif script is not None:
             shell, options = script
             permissions = "0444"
             runtime += (("/usr/bin/dash", "/bin/dash"),)
@@ -369,11 +404,14 @@ def contain_snapshot(snapshot, options, event, report, *, delegated, streams=Non
                      cancelled=None, libraries=()):
     script = None
     if event["openedr_executable_format"] == "script":
-        script = script_shell(snapshot) if platform.machine() == "x86_64" else None
+        script = script_runtime(snapshot) if platform.machine() == "x86_64" else None
         if script is None:
             report(event, "blocked", "unsupported_interpreter")
             return LAUNCH_FAILED
         event["openedr_containment_interpreter"] = script[0]
+        if script[0] == "python3.13" and not options.allow_python:
+            report(event, "blocked", "interpreter_not_allowed")
+            return LAUNCH_FAILED
     creation = {}
 
     def on_created(identity):
@@ -510,6 +548,7 @@ def main():
     parser.add_argument("--execution-volume", nargs=2, metavar=("MOUNT", "UUID"),
                         help="bind launches to a dedicated ext4 execution volume and require IMA approval for native execution")
     parser.add_argument("--timeout", type=int, metavar="SECONDS", default=30)
+    parser.add_argument("--allow-python", action="store_true", help="allow contained Debian Python 3.13 scripts")
     parser.add_argument("program", type=Path)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
