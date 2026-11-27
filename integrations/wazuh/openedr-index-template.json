@@ -73,6 +73,7 @@
             "openedr_response_process_unit": {"type": "keyword"},
             "openedr_file_scope": {"type": "keyword", "ignore_above": 4096},
             "openedr_file_mount_device": {"type": "keyword"},
+            "openedr_file_filesystem_uuid": {"type": "keyword"},
             "openedr_device_number": {"type": "keyword"},
             "openedr_device_id": {"type": "keyword"},
             "openedr_device_attachment": {"type": "keyword"},

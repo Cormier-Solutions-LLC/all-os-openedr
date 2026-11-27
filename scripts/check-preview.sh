@@ -39,7 +39,7 @@ from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volum
 from all_os_openedr.endpoint_health import broker_health, forwarder_health, sample
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, parse_catalog, read_catalog
 from all_os_openedr.executable_policy import policy_event, update_catalog
-from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
+from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events, mounted_filesystem_uuid
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, PEER, parse_policy, print_output, read_local_file, read_export, receive_snapshot, receive_message, receive_pipes, save_export, send_message, service, validate_reply
@@ -405,10 +405,26 @@ assert after[OLD_DFID_NAME].name == b"before" and after[NEW_DFID_NAME].name == b
 directory = next(decode_events(file_event(ON_DIRECTORY | 0x20, file_record(DFID_NAME, b"object", b"."))))
 provenance = FileProvenance("/", "/tmp/preview-file-provenance.jsonl")
 provenance.device = 1
+filesystem_uuid = "7e272e85-8b59-4670-94c5-44f63fbad833"
+filesystem_uuid_bytes = bytes.fromhex(filesystem_uuid.replace("-", ""))
+
+def btrfs_uuid_ioctl(fd, request, data):
+    assert fd == 12
+    if request == 0x80111500:
+        raise OSError("generic filesystem UUID request unavailable")
+    assert request == 0x8400941F
+    assert len(data) == 1024
+    data[16:32] = filesystem_uuid_bytes
+
+with patch("fcntl.ioctl", side_effect=btrfs_uuid_ioctl):
+    provenance.filesystem_uuid = mounted_filesystem_uuid(12)
 with patch.object(provenance, "resolve_path", return_value=b"/folder"):
     observation, = provenance.materialize(*directory)
 assert observation["openedr_file_object_id"] == before[FID].identity(provenance.boot_id, 1)
 assert observation["openedr_file_mount_device"] == "0:1"
+assert observation["openedr_file_filesystem_uuid"] == filesystem_uuid
+with patch("fcntl.ioctl", side_effect=OSError("filesystem UUID unavailable")):
+    assert mounted_filesystem_uuid(12) is None
 assert observation["openedr_file_path"] == "/folder" and "openedr_file_parent_id" not in observation
 try:
     list(decode_events(rename[:-1]))
@@ -1076,6 +1092,7 @@ for key, field_type in (
     ("openedr_policy_target", "keyword"),
     ("openedr_policy_reason", "keyword"),
     ("openedr_file_mount_device", "keyword"),
+    ("openedr_file_filesystem_uuid", "keyword"),
     ("openedr_device_id", "keyword"),
     ("openedr_device_number", "keyword"),
     ("openedr_device_mount_id", "long"),
