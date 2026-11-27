@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import platform
+import re
 import socket
 import stat
 import subprocess
@@ -31,11 +32,18 @@ LAUNCH_FAILED = 125
 MEMFD_NOEXEC = getattr(os, "MFD_NOEXEC_SEAL", 0x0008)  # Linux 6.3+.
 IMMUTABLE_SEALS = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
 STATUS_LIMIT = 4096
+DEBIAN_AMD64_LIBRARIES = Path("/usr/lib/x86_64-linux-gnu")
+LIBRARY_NAME = re.compile(r"lib[A-Za-z0-9_+.-]*\.so(?:\.[0-9]+)*")
 GLIBC_AMD64 = (
     ("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "/lib64/ld-linux-x86-64.so.2"),
     ("/usr/lib/x86_64-linux-gnu/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6"),
     ("/usr/lib/x86_64-linux-gnu/libm.so.6", "/lib/x86_64-linux-gnu/libm.so.6"),
 )
+BASH_AMD64 = (
+    ("/usr/bin/bash", "/bin/bash"),
+    ("/usr/lib/x86_64-linux-gnu/libtinfo.so.6", "/lib/x86_64-linux-gnu/libtinfo.so.6"),
+)
+BASE_RUNTIME_NAMES = {Path(source).name for source, _ in (*GLIBC_AMD64, *BASH_AMD64)}
 SHELL_PATHS = {
     b"/bin/sh": "dash",
     b"/usr/bin/sh": "dash",
@@ -187,7 +195,42 @@ def script_shell(snapshot):
     return shell, tuple(option.decode("ascii") for option in options)
 
 
-def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, document=None, export=None, cancelled=None):
+def valid_runtime_libraries(values):
+    return (isinstance(values, list) and len(values) <= 16
+            and all(isinstance(value, str) and len(value) <= 255
+                    and value == str(DEBIAN_AMD64_LIBRARIES / Path(value).name)
+                    and LIBRARY_NAME.fullmatch(Path(value).name)
+                    and Path(value).name not in BASE_RUNTIME_NAMES for value in values)
+            and len(set(values)) == len(values))
+
+
+def runtime_library_bindings(libraries):
+    if platform.machine() != "x86_64":
+        raise ValueError("Additional libraries require Debian amd64")
+    directory = DEBIAN_AMD64_LIBRARIES
+    if directory.resolve(strict=True) != directory:
+        raise ValueError("The runtime library directory must be canonical")
+    trusted_file(directory)
+    bindings = []
+    for requested in libraries:
+        path = Path(requested)
+        source = path.resolve(strict=True)
+        if (path.lstat().st_uid != 0 or source.parent != directory
+                or not LIBRARY_NAME.fullmatch(source.name) or not source.is_file()):
+            raise ValueError("The runtime library must be a root-owned Debian shared object")
+        trusted_file(source)
+        bindings.extend(("--ro-bind", str(source), requested))
+    return bindings
+
+
+def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, document=None, export=None, cancelled=None,
+            libraries=()):
+    bindings = []
+    if libraries:
+        try:
+            bindings = runtime_library_bindings(libraries)
+        except (OSError, ValueError, RuntimeError):
+            return LAUNCH_FAILED, "runtime_library_unavailable", None
     snapshot.flush()
     snapshot.seek(0)
     fd = snapshot.fileno()
@@ -213,13 +256,9 @@ def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, d
             shell_setup = ["--setenv", "PATH", "/bin", "--symlink", "dash", "/bin/sh"]
             startup = []
             if shell == "bash":
-                runtime += (
-                    ("/usr/bin/bash", "/bin/bash"),
-                    ("/usr/lib/x86_64-linux-gnu/libtinfo.so.6", "/lib/x86_64-linux-gnu/libtinfo.so.6"),
-                )
+                runtime += BASH_AMD64
                 startup = ["--noprofile", "--norc"]
             entrypoint = [f"/bin/{shell}", *startup, *options, "--", PROGRAM]
-        bindings = []
         for source, destination in runtime:
             path = Path(source)
             trusted_file(path)
@@ -327,7 +366,7 @@ def check_verdict(event, verdicts, report, *, path=None):
 
 
 def contain_snapshot(snapshot, options, event, report, *, delegated, streams=None, document=None, export=None,
-                     cancelled=None):
+                     cancelled=None, libraries=()):
     script = None
     if event["openedr_executable_format"] == "script":
         script = script_shell(snapshot) if platform.machine() == "x86_64" else None
@@ -346,7 +385,8 @@ def contain_snapshot(snapshot, options, event, report, *, delegated, streams=Non
         })
 
     exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created,
-                                      streams=streams, document=document, export=export, cancelled=cancelled)
+                                      streams=streams, document=document, export=export, cancelled=cancelled,
+                                      libraries=libraries)
     details = {**creation, "openedr_containment_exit_code": exit_code}
     if pid is not None:
         details["openedr_containment_pid"] = pid
@@ -362,7 +402,7 @@ def contain_snapshot(snapshot, options, event, report, *, delegated, streams=Non
     return exit_code
 
 
-def launch_download(snapshot, options, event, *, reporter, streams=None, cancelled=None):
+def launch_download(snapshot, options, event, *, reporter, streams=None, cancelled=None, libraries=()):
     fd = snapshot.fileno()
     if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & IMMUTABLE_SEALS != IMMUTABLE_SEALS:
         reporter(event, "blocked", "invalid_download")
@@ -376,10 +416,12 @@ def launch_download(snapshot, options, event, *, reporter, streams=None, cancell
     event.update(evidence)
     if not check_verdict(event, verdicts, reporter):
         return LAUNCH_FAILED
-    return contain_snapshot(snapshot, options, event, reporter, delegated=True, streams=streams, cancelled=cancelled)
+    return contain_snapshot(snapshot, options, event, reporter, delegated=True, streams=streams, cancelled=cancelled,
+                            libraries=libraries)
 
 
-def launch(options, event, *, delegated=False, reporter=None, streams=None, document=None, export=None, cancelled=None):
+def launch(options, event, *, delegated=False, reporter=None, streams=None, document=None, export=None, cancelled=None,
+           libraries=()):
     report = reporter or emit
     volume_device = None
     if delegated and options.execution_volume is None:
@@ -440,7 +482,7 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, docu
                     report({**event, "openedr_event_id": uuid.uuid4().hex}, "blocked", "native_exec_failed")
                     return LAUNCH_FAILED
             return contain_snapshot(snapshot, options, event, report, delegated=delegated, streams=streams,
-                                    document=document, export=export, cancelled=cancelled)
+                                    document=document, export=export, cancelled=cancelled, libraries=libraries)
 
 
 def launch_event(program=None):

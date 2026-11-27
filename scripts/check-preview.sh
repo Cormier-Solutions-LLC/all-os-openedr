@@ -639,10 +639,15 @@ policy = {
     "catalog": "/etc/verdicts.json",
     "applications": {"fixture": {"program": "tools/fixture", "uids": [1000], "arguments": ["fixed"]}},
 }
-assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"], [])
+assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"], [], [])
 download_policy = {"schema": 1, "catalog": "/etc/verdicts.json", "download_uids": [1000]}
-assert parse_policy(download_policy) == (None, None, "/etc/verdicts.json", {}, [1000])
-for invalid in ({"download_uids": [True]}, {"download_uids": [0]}, {"filesystem": "/srv/execution"}):
+assert parse_policy(download_policy) == (None, None, "/etc/verdicts.json", {}, [1000], [])
+library = "/usr/lib/x86_64-linux-gnu/libjq.so.1"
+assert parse_policy({**download_policy, "download_libraries": [library]})[-1] == [library]
+for invalid in ({"download_uids": [True]}, {"download_uids": [0]}, {"filesystem": "/srv/execution"},
+                {"download_libraries": [library, library]}, {"download_libraries": library},
+                {"download_libraries": ["/etc/libsecret.so.1"]},
+                {"download_libraries": ["/usr/lib/x86_64-linux-gnu/libc.so.6"]}):
     try:
         parse_policy({**download_policy, **invalid})
     except ValueError:
@@ -650,7 +655,10 @@ for invalid in ({"download_uids": [True]}, {"download_uids": [0]}, {"filesystem"
     else:
         raise AssertionError("Accepted invalid download policy")
 for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]},
-               {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}, {"export": 1}):
+               {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}, {"export": 1},
+               {"libraries": ["/usr/lib/x86_64-linux-gnu/../x86_64-linux-gnu/libjq.so.1"]},
+               {"libraries": ["libjq.so.1"]}, {"libraries": ["/usr/lib/x86_64-linux-gnu"]},
+               {"libraries": [f"/usr/lib/x86_64-linux-gnu/libexample{i}.so.1" for i in range(17)]}):
     application = {**policy["applications"]["fixture"], **fields}
     try:
         parse_policy({**policy, "applications": {"fixture": application}})
@@ -768,7 +776,7 @@ with peer, worker:
 peer, worker = socket.socketpair()
 with peer, worker:
     send_message(peer, {"application": "fixture"})
-    empty_policy = (*parse_policy(policy)[:3], {}, [])
+    empty_policy = (*parse_policy(policy)[:3], {}, [], [])
     with patch("all_os_openedr.launch_broker.read_policy", return_value=empty_policy), \
             patch("all_os_openedr.launch_broker.emit") as emit, patch("all_os_openedr.launch_broker.launch") as launch_app:
         service(worker)
@@ -776,7 +784,8 @@ with peer, worker:
         assert emit.call_args.args[0]["openedr_requester_uid"] == os.getuid()
         launch_app.assert_not_called()
 for request in ({"download": "path"}, {"download": True, "application": "fixture"},
-                {"download": True, "export": True}, {"download": True, "path": "/host/file"}):
+                {"download": True, "export": True}, {"download": True, "path": "/host/file"},
+                {"download": True, "libraries": [library]}, {"application": "fixture", "libraries": [library]}):
     peer, worker = socket.socketpair()
     with peer, worker:
         send_message(peer, request)
