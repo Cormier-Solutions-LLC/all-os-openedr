@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from .apparmor_policy import trusted_file
 from .containment import LAUNCH_FAILED, emit, launch, launch_event
+from .sandbox_audit import start_audit_session
 
 
 SOCKET_PATH = "/run/all-os-openedr-launch.sock"
@@ -128,6 +129,10 @@ def service(connection):
         block("request_not_authorized")
         return
     event["openedr_containment_application"] = name
+    if os.environ.get("OPENEDR_CONTAINMENT_AUDIT") == "1":
+        session_id = start_audit_session(os.getuid())
+        if session_id is not None:
+            event["openedr_containment_audit_session"] = session_id
     options = SimpleNamespace(
         catalog=catalog, execution_volume=(filesystem, volume), program=Path(filesystem) / app["program"],
         arguments=app["arguments"], timeout=LAUNCH_TIMEOUT,

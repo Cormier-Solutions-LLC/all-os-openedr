@@ -1,0 +1,55 @@
+// $1 is the dedicated broker UID. The broker creates a new kernel Audit session
+// before it forks. Start counting after the staged program or shell has exec'd.
+rawtracepoint:sched_process_fork
+/uid == $1 && curtask->loginuid.val == $1 && curtask->sessionid != 0xffffffff &&
+ !@owner[curtask->sessionid]/
+{
+  @owner[curtask->sessionid] = pid;
+}
+
+rawtracepoint:sched_process_exec
+/uid == $1 && @owner[curtask->sessionid] && !@mount_namespace[curtask->sessionid]/
+{
+  $program = str(((struct linux_binprm *)arg2)->filename);
+  if ($program == "/run/openedr/program" || $program == "/bin/dash" || $program == "/bin/bash") {
+    @mount_namespace[curtask->sessionid] = curtask->nsproxy->mnt_ns->ns.inum;
+  }
+}
+
+rawtracepoint:sys_exit
+/uid == $1 && @mount_namespace[curtask->sessionid] &&
+ @mount_namespace[curtask->sessionid] == curtask->nsproxy->mnt_ns->ns.inum/
+{
+  // Linux amd64 syscall numbers. Keep the whitelist aligned with sandbox_audit.py.
+  $operation = ((struct pt_regs *)arg0)->orig_ax;
+  if ($operation != 2 && $operation != 41 && $operation != 85 &&
+      $operation != 257 && $operation != 437) {
+    return;
+  }
+  $session = curtask->sessionid;
+  $count = @samples[$session];
+  if ($count < 128) {
+    printf("%u %u %llu %u %ld\n", $session, pid, nsecs, $operation, (int64)arg1);
+  } else if ($count == 128) {
+    printf("%u %u %llu limit 0\n", $session, pid, nsecs);
+  }
+  if ($count <= 128) {
+    @samples[$session] = $count + 1;
+  }
+}
+
+rawtracepoint:sched_process_exit
+/uid == $1 && pid == tid && @owner[curtask->sessionid] == pid/
+{
+  $session = curtask->sessionid;
+  delete(@owner[$session]);
+  delete(@mount_namespace[$session]);
+  delete(@samples[$session]);
+}
+
+END
+{
+  clear(@owner);
+  clear(@mount_namespace);
+  clear(@samples);
+}

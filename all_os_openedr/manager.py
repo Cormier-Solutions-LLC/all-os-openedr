@@ -12,7 +12,7 @@ from urllib.error import URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
-from .process_tree import containment_process_tree
+from .process_tree import BOOT_ID, KERNEL_ORDER, containment_process_tree, positive_integer
 
 EVENT_FIELDS = (
     "openedr_source", "openedr_schema", "openedr_event", "openedr_event_id",
@@ -23,11 +23,18 @@ CONTAINMENT_FIELDS = EVENT_FIELDS + (
     "openedr_executable_verdict", "openedr_containment_application",
     "openedr_containment_launch_id", "openedr_containment_pid",
     "openedr_containment_pid_namespace", "openedr_containment_decision",
-    "openedr_containment_reason", "openedr_containment_exit_code",
+    "openedr_containment_reason", "openedr_containment_exit_code", "openedr_containment_audit_session",
+)
+ACTIVITY_FIELDS = EVENT_FIELDS + (
+    "openedr_kernel_monotonic_ns", "openedr_containment_activity_class",
+    "openedr_containment_activity_operation", "openedr_containment_activity_result",
+    "openedr_containment_activity_errno",
 )
 CONTAINMENT_EVENTS = ("executable.sandbox_created", "executable.launch_decision")
 CONTAINMENT_ROUTE = re.compile(r"/v1/containment/([0-9a-f]{32})")
 PROCESSES_ROUTE = re.compile(r"/v1/containment/([0-9a-f]{32})/processes")
+ACTIVITY_ROUTE = re.compile(r"/v1/containment/([0-9a-f]{32})/activity")
+MAX_ACTIVITY = 128
 MAX_RESPONSE = 1024 * 1024
 
 
@@ -97,6 +104,56 @@ class Index:
             raise ValueError("OpenSearch search timed out")
         return [hit["_source"] for hit in payload["hits"]["hits"]]
 
+    def containment_activity(self, launch_id):
+        result = {"launch_id": launch_id, "events": [], "truncated": False}
+        session_field = "openedr_containment_audit_session"
+
+        def search(fields, terms, size, ordered=False):
+            query = {
+                "_source": ["agent.id", *(f"data.{field}" for field in fields)],
+                "size": size,
+                "query": {"bool": {"filter": [
+                    {"term": {"data.openedr_source": "all-os-openedr"}},
+                    *({"term": {field: value}} for field, value in terms.items()),
+                ]}},
+            }
+            if ordered:
+                query["sort"] = KERNEL_ORDER
+            return self.execute(query)
+
+        records = search(("openedr_host", "openedr_boot_id", "openedr_uid", session_field), {
+            "data.openedr_event": "executable.sandbox_created",
+            "data.openedr_containment_launch_id": launch_id,
+        }, 2)
+        if len(records) != 1:
+            return {**result, "status": "ambiguous_launch" if records else "creation_unavailable"}
+        creation = records[0].get("data", {})
+        agent = records[0].get("agent", {}).get("id")
+        host, boot = creation.get("openedr_host"), creation.get("openedr_boot_id")
+        uid = positive_integer(creation.get("openedr_uid"))
+        session = creation.get(session_field)
+        session = 0 if type(session) in (int, str) and session in (0, "0") else positive_integer(session)
+        if (session is None or session >= 2**32 - 1 or uid is None or uid >= 2**32 - 1
+                or not isinstance(agent, str) or not re.fullmatch(r"[0-9]{1,16}", agent)
+                or not isinstance(host, str) or not 0 < len(host) <= 256
+                or not isinstance(boot, str) or not BOOT_ID.fullmatch(boot)):
+            return {**result, "status": "audit_session_unavailable"}
+        hits = search(ACTIVITY_FIELDS, {
+            "agent.id": agent, "data.openedr_host": host, "data.openedr_boot_id": boot,
+            "data.openedr_uid": uid, f"data.{session_field}": session,
+            "data.openedr_event": "executable.sandbox_activity",
+        }, MAX_ACTIVITY + 1, ordered=True)
+        events = [hit.get("data", {}) for hit in hits]
+        limited = any(event.get("openedr_containment_activity_result") == "limit_reached" for event in events)
+        return {
+            **result, "status": "observed" if events else "activity_unavailable",
+            "truncated": limited or len(events) > MAX_ACTIVITY,
+            "events": [
+                {field: event[field] for field in ACTIVITY_FIELDS if field in event}
+                for event in events if event.get("openedr_containment_activity_result") != "limit_reached"
+            ][:MAX_ACTIVITY],
+        }
+
 
 class Manager(BaseHTTPRequestHandler):
     timeout = 5
@@ -121,7 +178,8 @@ class Manager(BaseHTTPRequestHandler):
             return
         containment = CONTAINMENT_ROUTE.fullmatch(self.path)
         processes = PROCESSES_ROUTE.fullmatch(self.path)
-        if self.path not in ("/readyz", "/v1/events") and containment is None and processes is None:
+        activity = ACTIVITY_ROUTE.fullmatch(self.path)
+        if self.path not in ("/readyz", "/v1/events") and not (containment or processes or activity):
             self.reply(404)
             return
         ready = self.path == "/readyz"
@@ -131,7 +189,9 @@ class Manager(BaseHTTPRequestHandler):
                 self.reply(401)
                 return
         try:
-            if processes is not None:
+            if activity is not None:
+                payload = self.server.index.containment_activity(activity[1])
+            elif processes is not None:
                 payload = containment_process_tree(self.server.index, processes[1])
             elif containment is not None:
                 payload = {"events": self.server.index.search(4, launch_id=containment[1])}

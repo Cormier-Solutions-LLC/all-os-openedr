@@ -1,0 +1,4 @@
+<localfile>
+  <log_format>json</log_format>
+  <location>/var/log/all-os-openedr-containment-audit/events.jsonl</location>
+</localfile>

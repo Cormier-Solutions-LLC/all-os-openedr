@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Observe selected file opens and socket creation results from contained Debian applications without altering enforcement.
 - Look up the kernel-reported process tree and observed exec and exit events for a managed Debian containment launch.
 - Record sandbox creation before the final launch decision and show both records through an authenticated, launch-scoped management endpoint.
 - Give authorized Debian users a local launch client for administrator-staged applications on an IMA volume and record their caller UID in the containment audit event.

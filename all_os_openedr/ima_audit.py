@@ -62,12 +62,12 @@ def parse_failure(line, host, boot_id):
     return event
 
 
-def append(event):
-    fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+def append(event, *, log=LOG):
+    fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as output:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
-            raise OSError("IMA dispatch requires a root-owned regular log file")
+            raise OSError("Audit output requires a root-owned regular log file")
         output.write(json.dumps(event, separators=(",", ":")) + "\n")
 
 

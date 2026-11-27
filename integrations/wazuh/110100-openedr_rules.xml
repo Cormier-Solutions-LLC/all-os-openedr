@@ -95,4 +95,11 @@
     <options>no_full_log</options>
     <group>openedr_containment,</group>
   </rule>
+  <rule id="110124" level="3">
+    <if_sid>110100</if_sid>
+    <field name="openedr_event" type="pcre2">^executable\.sandbox_activity$</field>
+    <description>All OS OpenEDR recorded a contained syscall result</description>
+    <options>no_full_log</options>
+    <group>openedr_containment,</group>
+  </rule>
 </group>
