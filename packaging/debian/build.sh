@@ -28,7 +28,7 @@ Priority: optional
 Architecture: all
 Maintainer: All OS OpenEDR maintainers <all-os-openedr@users.noreply.github.com>
 Depends: python3 (>= 3.10), init-system-helpers
-Suggests: apparmor, auditd, bpftrace, bubblewrap, nftables, openssh-client, python3-pyudev, python3-seccomp, rsyslog, samba, samba-vfs-modules, wazuh-agent
+Suggests: apparmor, auditd, bpftrace, bubblewrap, clang-19, libbpf-dev, libc6-dev, linux-libc-dev, nftables, openssh-client, python3-pyudev, python3-seccomp, rsyslog, samba, samba-vfs-modules, wazuh-agent
 Description: OpenEDR endpoint detection and protection preview for Linux
  The unprivileged collector writes local JSON process observations for Wazuh.
  Optional controls include IMA appraisal and managed executable containment.
@@ -58,6 +58,7 @@ for hook in ip_send_skb ip6_send_skb; do
     cat "$root/packaging/debian/dns-observations.bt.in"
 done > "$stage/usr/share/all-os-openedr/network/dns-observations.bt"
 chmod 0644 "$stage/usr/share/all-os-openedr/network/dns-observations.bt"
+install -m 0644 "$root/packaging/debian/protocol-observations.bpf.c" "$stage/usr/share/all-os-openedr/network/"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/health-localfile.xml" \
     "$root/integrations/wazuh/containment-localfile.xml" \
@@ -73,6 +74,7 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/removable-storage-localfile.xml" \
     "$root/integrations/wazuh/tcp-localfile.xml" \
     "$root/integrations/wazuh/dns-localfile.xml" \
+    "$root/integrations/wazuh/protocol-localfile.xml" \
     "$root/integrations/wazuh/response-localfile.xml" \
     "$root/integrations/wazuh/openedr-samba_decoders.xml" \
     "$root/integrations/wazuh/110100-openedr_rules.xml" \
@@ -86,6 +88,7 @@ install -m 0644 "$root/packaging/debian/all-os-openedr.service" \
     "$root/packaging/debian/all-os-openedr-removable-storage.service" \
     "$root/packaging/debian/all-os-openedr-tcp.service" \
     "$root/packaging/debian/all-os-openedr-dns.service" \
+    "$root/packaging/debian/all-os-openedr-protocol.service" \
     "$root/packaging/debian/all-os-openedr-containment-audit.service" \
     "$root/packaging/debian/all-os-openedr-launch.socket" \
     "$root/packaging/debian/all-os-openedr-launch@.service" \
@@ -97,5 +100,6 @@ install -m 0755 "$root/packaging/debian/postinst" "$stage/DEBIAN/postinst"
 install -m 0755 "$root/packaging/debian/postrm" "$stage/DEBIAN/postrm"
 install -m 0644 "$root/LICENSE.md" "$stage/usr/share/doc/all-os-openedr/copyright"
 install -m 0644 "$root/NOTICE.md" "$stage/usr/share/doc/all-os-openedr/NOTICE.md"
+install -m 0644 "$root/packaging/debian/protocol-bpf-license.txt" "$stage/usr/share/doc/all-os-openedr/"
 mkdir -p -- "$output"
 dpkg-deb --root-owner-group --build "$stage" "$output/all-os-openedr_${version}_all.deb"

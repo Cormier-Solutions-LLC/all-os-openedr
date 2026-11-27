@@ -8,5 +8,9 @@ their respective files. Schedule A excludes the Netfilter SDK and MadCodeHook
 from the grant. Upstream binary releases and excluded SDK binaries are outside
 the downstream release build.
 
+The independent Linux protocol BPF source has separate terms in
+packaging/debian/protocol-bpf-license.txt. The Debian package includes
+those terms under /usr/share/doc/all-os-openedr/.
+
 For production interoperability, review the limits on use with third-party
 products in section 1.1(b) and the MSSP/SOC service provision in section 1.4.

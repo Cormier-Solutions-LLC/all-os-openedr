@@ -35,6 +35,7 @@ from unittest.mock import patch
 from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
+from all_os_openedr.application_protocols import FTPRequests, HTTPRequests
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
 from all_os_openedr.dns_observations import DNSTrace, dns_name
@@ -50,6 +51,7 @@ from all_os_openedr.network_trace import MAX_ACCOUNT_EVENTS_PER_SECOND, MAX_ACTO
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
+from all_os_openedr.protocol_observations import HEADER_BYTES, SYN, Packet, ProtocolTrace
 from all_os_openedr.removable_copies import PATH_BYTES, TransferLog, TransferTrace, Volume
 from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
@@ -604,6 +606,73 @@ assert gap["openedr_gap_reason"] == "dns_nonlinear_question"
 assert dns_trace.receive(b'{"type":"lost_events","data":3}')["openedr_gap_reason"] == "dns_kernel_events_lost"
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110137']/field"), query["openedr_event"])
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110138']/field"), gap["openedr_event"])
+http = HTTPRequests()
+assert list(http.feed(0, b"GET http://user:secret@example.test/a;token=secret")) == []
+headers = b"?token=secret HTTP/1.1\r\nAuthorization: Basic secret\r\n\r\n"
+request, = http.feed(0, headers)
+assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
+                   "openedr_request_host": "example.test", "openedr_request_path": "/a"}
+bad_body = b"GET /fake HTTP/1.1\r\n\r\n"
+fixed = b"POST /fixed HTTP/1.1\r\nContent-Length: " + str(len(bad_body)).encode() + b"\r\n\r\n"
+chunked = b"POST /chunk HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+tail = b"GET /last HTTP/1.1\r\nHost: example.test\r\n\r\n"
+request, = http.feed(0, fixed + bad_body[:2])
+assert request["openedr_request_path"] == "/fixed"
+http.skip(0, len(bad_body) - 2)
+framed = format(len(bad_body), "x").encode() + b"\r\n" + bad_body + b"\r\n0\r\nX-Ignored: secret\r\n\r\n"
+assert [e["openedr_request_path"] for e in http.feed(0, chunked + framed + tail)] == ["/chunk", "/last"]
+try:
+    list(HTTPRequests().feed(0, b"POST /ambiguous HTTP/1.1\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n"))
+except ValueError:
+    pass
+else:
+    raise AssertionError("Accepted ambiguous HTTP message framing")
+ftp = FTPRequests()
+for direction, chunk in (
+    (1, b"220 Hello\r\n"),
+    (0, b"USER secret\r\nPASS secret\r\nPWD\r\n"),
+    (1, b"331 Username okay\r\n230 Logged in\r\n257 \"/base\"\r\n"),
+    (0, b"CWD pub\r\n"),
+    (1, b"250 Directory changed\r\n"),
+    (0, b"CWD missing\r\n"),
+    (1, b"550 Directory unavailable\r\n"),
+    (0, b"RE"),
+):
+    assert list(ftp.feed(direction, chunk)) == []
+request, = ftp.feed(0, b"TR item\r\n")
+assert request == {"openedr_application_protocol": "ftp", "openedr_request_method": "RETR",
+                   "openedr_request_path": "/base/pub/item", "openedr_request_path_scope": "absolute"}
+assert list(ftp.feed(0, b"AUTH TLS\r\nRETR secret\r\n")) == []
+assert list(ftp.feed(0, b"RETR secret\r\n")) == []
+protocol = ProtocolTrace("boot", "host", 100)
+packet = Packet()
+packet.cookie, packet.stamp = 5, 2_500_000_002
+packet.actor.connected, packet.actor.born = 2_500_000_000, 2_000_000_000
+packet.actor.pid, packet.actor.uid, packet.actor.netns = 1234, 1000, 4026531840
+packet.actor.comm[:] = b"fixture".ljust(16, b"\0")
+packet.ip_version, packet.local_port, packet.peer_port = 4, 43210, 80
+packet.local[:4] = packet.peer[:4] = b"\x7f\0\0\x01"
+
+def protocol_feed(sequence, data=b"", flags=0):
+    packet.sequence, packet.length, packet.captured, packet.flags = sequence, len(data), len(data), flags
+    packet.stamp += 1
+    return list(protocol.receive_packet(bytes(packet)[:HEADER_BYTES] + data))
+
+assert protocol_feed(0xfffffffc, flags=SYN) == []
+assert protocol_feed(0xfffffffd, b"GET /") == []
+assert protocol_feed(0xfffffffd, b"GET /") == []
+observed, = protocol_feed(2, b"example HTTP/1.1\r\nHost: example.test\r\n\r\n")
+assert observed["openedr_file_actor_id"] == started["openedr_file_actor_id"]
+assert observed["openedr_request_path"] == "/example"
+assert observed["openedr_network_attribution"] == "socket_connect_actor"
+packet.actor.connected += 1
+assert protocol_feed(40, flags=SYN) == []
+discontinuity, = protocol_feed(44, b"GET /later HTTP/1.1\r\n\r\n")
+assert discontinuity["openedr_gap_reason"] == "application_stream_discontinuity"
+protocol_feed_xml = ElementTree.parse(integration / "protocol-localfile.xml")
+assert protocol_feed_xml.findtext("location") == "/var/log/all-os-openedr-protocol/events.jsonl"
+assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110139']/field"), observed["openedr_event"])
+assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110140']/field"), discontinuity["openedr_event"])
 fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 8388609, "fixed-uuid", 101)
 usb_volume = Volume(Mount(52, "8:2", "/srv/USB volume", "ext4", "/dev/sdb1"), 8388610, "usb-uuid", 102, "media-id")
 transfer = TransferTrace(fixed_volume, usb_volume, "boot", "host")
@@ -1231,6 +1300,9 @@ for key, field_type in (
     ("openedr_network_remote_ip", "ip"),
     ("openedr_network_remote_port", "integer"),
     ("openedr_network_transport", "keyword"),
+    ("openedr_network_attribution", "keyword"),
+    ("openedr_application_protocol", "keyword"),
+    ("openedr_request_path", "keyword"),
     ("openedr_dns_name", "keyword"),
     ("openedr_dns_type", "keyword"),
     ("openedr_process_id", "keyword"),
@@ -1359,7 +1431,8 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
     "$work/package/usr/bin/all-os-openedr-executable-policy" | sh -s -- apply --help >/dev/null
 test -x "$work/package/usr/bin/all-os-openedr-health"
 for unit in all-os-openedr-health.service all-os-openedr-health.timer all-os-openedr-removable-storage.service \
-    all-os-openedr-removable-copies.service all-os-openedr-tcp.service all-os-openedr-dns.service; do
+    all-os-openedr-removable-copies.service all-os-openedr-tcp.service all-os-openedr-dns.service \
+    all-os-openedr-protocol.service; do
     cmp "packaging/debian/$unit" "$work/package/usr/lib/systemd/system/$unit"
 done
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
@@ -1369,7 +1442,7 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml policy-localfile.xml \
-    removable-copies-localfile.xml removable-storage-localfile.xml tcp-localfile.xml dns-localfile.xml \
+    removable-copies-localfile.xml removable-storage-localfile.xml tcp-localfile.xml dns-localfile.xml protocol-localfile.xml \
     110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
@@ -1379,6 +1452,8 @@ dns_program="$work/package/usr/share/all-os-openedr/network/dns-observations.bt"
 grep -qx 'fentry:ip_send_skb' "$dns_program"
 grep -qx 'fentry:ip6_send_skb' "$dns_program"
 test "$(grep -c '^fentry:' "$dns_program")" -eq 2
+cmp packaging/debian/protocol-observations.bpf.c "$work/package/usr/share/all-os-openedr/network/protocol-observations.bpf.c"
+cmp packaging/debian/protocol-bpf-license.txt "$work/package/usr/share/doc/all-os-openedr/protocol-bpf-license.txt"
 cmp integrations/samba/rsyslog.conf "$work/package/usr/share/all-os-openedr/samba/rsyslog.conf"
 (cd "$work/package/usr/lib/all-os-openedr" && python3 -B -m all_os_openedr --once --output "$work/packaged.jsonl")
 test -s "$work/packaged.jsonl"
