@@ -18,7 +18,7 @@ LOG = Path("/var/log/all-os-openedr-ima/audit.jsonl")
 APPRAISAL = re.compile(
     rb'(?:node=\S+ )?type=INTEGRITY_DATA msg=audit\((\d{1,12}\.\d{1,9}):(\d{1,20})\): '
     rb'pid=(\d{1,10}) uid=(\d{1,10}) auid=(\d{1,10}) ses=\d+ '
-    rb'(?:subj=\S+ )?op=appraise_data cause=([a-zA-Z0-9_-]+) '
+    rb'(?:subj=\S+ )?op=(appraise_data|collect_data) cause=([a-zA-Z0-9_-]+) '
 )
 FAILURE = re.compile(rb' res=0 errno=-?\d+$')
 FILENAME = re.compile(rb' name=(?:"([^"]*)"|([0-9A-Fa-f]+))(?= dev=| ino=| res=)')
@@ -32,7 +32,9 @@ def parse_failure(line, host, boot_id):
     matched = APPRAISAL.match(core)
     if matched is None or FAILURE.search(core, matched.end()) is None:
         return None
-    stamp, serial, pid, uid, auid, cause = matched.groups()
+    stamp, serial, pid, uid, auid, operation, cause = matched.groups()
+    if operation == b"collect_data" and cause != b"failed-mprotect":
+        return None
     try:
         observed = datetime.fromtimestamp(float(stamp), timezone.utc)
     except (OverflowError, ValueError, OSError):
