@@ -39,6 +39,11 @@ struct actor {
     __u32 uid;
     __u32 netns;
     char comm[16];
+    __u32 seen;
+};
+struct closed_socket {
+    __u64 cookie;
+    __u64 connected;
 };
 
 struct packet {
@@ -152,12 +157,30 @@ int BPF_PROG(observe_connect, struct sock *socket)
     return 0;
 }
 
+static __always_inline void retire_socket(struct sock *socket)
+{
+    __u64 cookie = BPF_CORE_READ(socket, __sk_common.skc_cookie.counter);
+    struct actor *actor = bpf_map_lookup_elem(&actors, &cookie);
+    if (actor) {
+        struct closed_socket closed = { .cookie = cookie, .connected = actor->connected };
+        if (actor->seen && bpf_ringbuf_output(&packets, &closed, sizeof(closed), 0))
+            lose_packet(0);
+        bpf_map_delete_elem(&actors, &cookie);
+    }
+}
+
+SEC("fentry/tcp_set_state")
+int BPF_PROG(observe_close, struct sock *socket, int state)
+{
+    if (state == 7) /* TCP_CLOSE */
+        retire_socket(socket);
+    return 0;
+}
+
 SEC("fentry/__sk_free")
 int BPF_PROG(forget_socket, struct sock *socket)
 {
-    __u64 cookie = BPF_CORE_READ(socket, __sk_common.skc_cookie.counter);
-    if (cookie)
-        bpf_map_delete_elem(&actors, &cookie);
+    retire_socket(socket);
     return 0;
 }
 
@@ -195,7 +218,7 @@ static __always_inline int observe_packet(struct __sk_buff *skb, int incoming)
         tcp.doff < 5)
         return 1;
     __u16 peer_port = bpf_ntohs(incoming ? tcp.source : tcp.dest);
-    if (peer_port != FTP_PORT && (incoming || peer_port != HTTP_PORT))
+    if (peer_port != FTP_PORT && peer_port != HTTP_PORT)
         return 1;
     offset += tcp.doff * 4;
     if (skb->len < offset || (skb->len == offset && !tcp.syn && !tcp.fin && !tcp.rst))
@@ -239,6 +262,8 @@ static __always_inline int observe_packet(struct __sk_buff *skb, int incoming)
     /* Keep the explicit nonzero guard visible to the BPF verifier. */
     asm volatile ("" : "+r"(capture));
     packet->captured = capture;
+    if (!incoming && tcp.syn)
+        actor->seen = 1;
     if ((capture && bpf_skb_load_bytes(skb, offset, packet->body, capture)) ||
         bpf_ringbuf_output(&packets, packet, __builtin_offsetof(struct packet, body) + capture, 0))
         lose_packet(0);

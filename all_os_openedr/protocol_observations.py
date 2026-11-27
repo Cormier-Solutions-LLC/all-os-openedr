@@ -5,6 +5,7 @@ import errno
 import ipaddress
 import json
 import os
+import struct
 import sys
 import time
 from contextlib import ExitStack
@@ -20,6 +21,7 @@ OBJECT = "/run/all-os-openedr-protocol/protocol.bpf.o"
 OUTPUT = Path("/var/log/all-os-openedr-protocol/events.jsonl")
 CAPTURE_LIMIT = 4096
 FLOW_LIMIT = 1024
+ACCOUNT_FLOW_LIMIT = 128
 IDLE_NS = 120_000_000_000
 SYN, FIN, RST = 1, 2, 4
 MASK = 0xffffffff
@@ -29,7 +31,7 @@ class Actor(c.Structure):
     _fields_ = [
         ("born", c.c_uint64), ("connected", c.c_uint64), ("pid", c.c_uint32),
         ("uid", c.c_uint32), ("netns", c.c_uint32),
-        ("comm", c.c_uint8 * 16),
+        ("comm", c.c_uint8 * 16), ("seen", c.c_uint32),
     ]
 
 
@@ -64,6 +66,7 @@ class Packet(c.Structure):
 
 
 HEADER_BYTES = Packet.peer.offset + 16
+CLOSED_SOCKET = struct.Struct("=QQ")
 RING_SAMPLE = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_void_p, c.c_size_t)
 
 
@@ -100,9 +103,11 @@ class Flow:
     def __init__(self, packet):
         self.endpoint = packet.tuple()
         self.stamp = packet.stamp
+        self.uid = packet.actor.uid
         self.parser = HTTPRequests() if packet.peer_port == 80 else FTPRequests()
         self.streams = (Stream(), Stream())
         self.emitted = 0
+        self.finished = [False, False]
 
 
 class ProtocolTrace(NetworkTrace):
@@ -114,6 +119,9 @@ class ProtocolTrace(NetworkTrace):
         self.sweep_at = 0
 
     def receive_packet(self, raw):
+        if len(raw) == CLOSED_SOCKET.size:
+            self.flows.pop(CLOSED_SOCKET.unpack(raw), None)
+            return
         packet, payload = Packet.unpack(raw)
         if packet.stamp >= self.sweep_at:
             self.flows = {cookie: flow for cookie, flow in self.flows.items() if packet.stamp - flow.stamp < IDLE_NS}
@@ -125,6 +133,9 @@ class ProtocolTrace(NetworkTrace):
                 return
             if len(self.flows) >= FLOW_LIMIT:
                 yield self.gap("flow_capacity")
+                return
+            if sum(flow.uid == packet.actor.uid for flow in self.flows.values()) >= ACCOUNT_FLOW_LIMIT:
+                yield self.gap("account_flow_capacity")
                 return
             flow = self.flows[socket_key] = Flow(packet)
         flow.stamp = max(flow.stamp, packet.stamp)
@@ -153,7 +164,9 @@ class ProtocolTrace(NetworkTrace):
         except ValueError:
             self.flows.pop(socket_key, None)
             yield self.gap("stream_discontinuity")
-        if packet.flags & (FIN | RST):
+        if packet.flags & FIN:
+            flow.finished[packet.incoming] = True
+        if packet.flags & RST or all(flow.finished):
             self.flows.pop(socket_key, None)
 
 
@@ -210,7 +223,7 @@ def watch(trace):
         nonlocal failure
         try:
             try:
-                if not HEADER_BYTES <= size <= HEADER_BYTES + CAPTURE_LIMIT:
+                if size != CLOSED_SOCKET.size and not HEADER_BYTES <= size <= HEADER_BYTES + CAPTURE_LIMIT:
                     raise ValueError("Unexpected kernel sample size")
                 for event in trace.receive_packet(c.string_at(address, size)):
                     publish(event)
@@ -234,7 +247,7 @@ def watch(trace):
         cleanup.callback(library.ring_buffer__free, ring)
         group = os.open("/sys/fs/cgroup", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         cleanup.callback(os.close, group)
-        for name in (b"observe_connect", b"forget_socket", b"protocol_egress", b"protocol_ingress"):
+        for name in (b"observe_connect", b"observe_close", b"forget_socket", b"protocol_egress", b"protocol_ingress"):
             program = require_pointer(library, library.bpf_object__find_program_by_name(obj, name), "Find protocol probe")
             link = library.bpf_program__attach_cgroup(program, group) if name.startswith(b"protocol_") else library.bpf_program__attach(program)
             cleanup.callback(library.bpf_link__destroy, require_pointer(library, link, f"Attach {name.decode()}"))

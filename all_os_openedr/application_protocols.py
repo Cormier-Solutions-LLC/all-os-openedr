@@ -12,6 +12,7 @@ LINE_LIMIT = 4096
 PATH_LIMIT = 1024
 TOKEN = re.compile(rb"[!#$%&'*+\-.^_\x60|~0-9a-zA-Z]+")
 REQUEST = re.compile(rb"([^ ]+) ([!-~]+) HTTP/1\.[01]")
+RESPONSE = re.compile(rb"HTTP/1\.[01] ([1-5][0-9]{2})(?: [^\r\n]*)?")
 HOSTNAME = re.compile(r"[A-Za-z0-9._-]{1,253}")
 FTP_COMMAND = re.compile(rb"([A-Za-z]{3,4})(?: ([^\r\n]*))?")
 FTP_REPLY = re.compile(rb"([1-5][0-9]{2})([ -])(.*)")
@@ -55,8 +56,36 @@ def request_target(raw, host):
     return {"openedr_request_path": path, **({"openedr_request_host": host} if host else {})}
 
 
-class HTTPRequests:
-    def __init__(self):
+def http_fields(fields):
+    length, transfer, host, upgraded = None, None, None, False
+    for field in fields.split(b"\r\n") if fields else ():
+        name, separator, content = field.partition(b":")
+        if not separator or not TOKEN.fullmatch(name):
+            raise ValueError("Invalid HTTP header")
+        content = content.strip(b" \t")
+        match name.lower():
+            case b"host":
+                host = authority(content)
+            case b"content-length":
+                if not content.isdigit() or len(content) > 18 or length is not None:
+                    raise ValueError("Invalid HTTP Content-Length")
+                length = int(content)
+            case b"transfer-encoding":
+                if transfer is not None:
+                    raise ValueError("Ambiguous HTTP transfer coding")
+                transfer = [coding.strip() for coding in content.lower().split(b",")]
+            case b"upgrade":
+                upgraded = bool(content)
+    if transfer is not None and (
+        length is not None or transfer[-1] != b"chunked" or transfer.count(b"chunked") != 1 or not all(transfer)
+    ):
+        raise ValueError("Unsupported HTTP body framing")
+    return length, transfer, host, upgraded
+
+
+class HTTPStream:
+    def __init__(self, headers):
+        self.headers = headers
         self.buffer = bytearray()
         self.state = "headers"
         self.remaining = 0
@@ -69,52 +98,25 @@ class HTTPRequests:
         if not self.remaining:
             self.state = "headers" if self.state == "body" else "chunk_end"
 
-    def skip(self, incoming, length):
+    def skip(self, length):
         if self.state != "opaque":
             self.consume(length)
 
-    def headers(self, value):
-        request, _, fields = value.partition(b"\r\n")
-        match = REQUEST.fullmatch(request)
-        if not match or not TOKEN.fullmatch(match[1]):
-            raise ValueError("Invalid HTTP request line")
-        method, target = match.groups()
-        length, transfer, host, upgraded = None, None, None, False
-        for field in fields.split(b"\r\n") if fields else ():
-            name, separator, content = field.partition(b":")
-            if not separator or not TOKEN.fullmatch(name):
-                raise ValueError("Invalid HTTP header")
-            content = content.strip(b" \t")
-            match name.lower():
-                case b"host":
-                    host = authority(content)
-                case b"content-length":
-                    if not content.isdigit() or len(content) > 18 or length is not None:
-                        raise ValueError("Invalid HTTP Content-Length")
-                    length = int(content)
-                case b"transfer-encoding":
-                    if transfer is not None:
-                        raise ValueError("Ambiguous HTTP transfer coding")
-                    transfer = [coding.strip() for coding in content.lower().split(b",")]
-                case b"upgrade":
-                    upgraded = True
-        if transfer is not None and (
-            length is not None or transfer[-1] != b"chunked" or transfer.count(b"chunked") != 1 or not all(transfer)
-        ):
-            raise ValueError("Unsupported HTTP body framing")
-        if method == b"CONNECT" or upgraded:
-            self.state = "opaque"
-        elif transfer is not None:
+    def body(self, length, transfer, close_delimited=False):
+        if transfer is not None:
             self.state = "chunk_size"
         elif length:
             self.state = "body"
             self.remaining = length
-        if method in {b"GET", b"POST"} and (fields := request_target(target, host)):
-            return {"openedr_application_protocol": "http", "openedr_request_method": method.decode("ascii"), **fields}
-        return None
+        elif length is None and close_delimited:
+            self.stop()
 
-    def feed(self, incoming, data):
-        if incoming or self.state == "opaque":
+    def stop(self):
+        self.state = "opaque"
+        self.buffer.clear()
+
+    def feed(self, data):
+        if self.state == "opaque":
             return
         self.buffer.extend(data)
         while self.buffer:
@@ -161,6 +163,53 @@ class HTTPRequests:
                     self.state = "headers"
 
 
+class HTTPRequests:
+    def __init__(self):
+        self.pending = deque()
+        self.streams = (HTTPStream(self.request), HTTPStream(self.response))
+
+    def skip(self, incoming, length):
+        self.streams[incoming].skip(length)
+
+    def feed(self, incoming, data):
+        yield from self.streams[incoming].feed(data)
+
+    def request(self, value):
+        first, _, headers = value.partition(b"\r\n")
+        match = REQUEST.fullmatch(first)
+        if not match or not TOKEN.fullmatch(match[1]):
+            raise ValueError("Invalid HTTP request line")
+        method, target = match.groups()
+        length, transfer, host, offered_upgrade = http_fields(headers)
+        if len(self.pending) >= 64:
+            raise ValueError("HTTP request queue exceeds the observation bound")
+        self.pending.append((method, offered_upgrade))
+        self.streams[0].body(length, transfer)
+        if method in {b"GET", b"POST"} and (fields := request_target(target, host)):
+            return {"openedr_application_protocol": "http", "openedr_request_method": method.decode("ascii"), **fields}
+        return None
+
+    def response(self, value):
+        first, _, headers = value.partition(b"\r\n")
+        match = RESPONSE.fullmatch(first)
+        if not match or not self.pending:
+            raise ValueError("Unmatched HTTP response")
+        status = int(match[1])
+        if status < 200 and status != 101:
+            return None
+        method, offered_upgrade = self.pending.popleft()
+        if status == 101 and (not offered_upgrade or not http_fields(headers)[3]):
+            raise ValueError("Unmatched HTTP upgrade")
+        if status == 101 or (method == b"CONNECT" and 200 <= status < 300):
+            for stream in self.streams:
+                stream.stop()
+            self.pending.clear()
+        elif method != b"HEAD" and status not in {204, 304}:
+            length, transfer, _, _ = http_fields(headers)
+            self.streams[1].body(length, transfer, close_delimited=True)
+        return None
+
+
 def ftp_path(value, cwd=None):
     if not value or len(value) > PATH_LIMIT or b"://" in value or any(byte < 32 or byte == 127 for byte in value):
         return None
@@ -191,13 +240,9 @@ class FTPRequests:
         if not match:
             raise ValueError("Invalid FTP command line")
         command, argument = match[1].upper(), match[2] or b""
-        if command == b"AUTH":
-            self.opaque = True
-            self.pending.clear()
-            return None
         if len(self.pending) >= 64:
             raise ValueError("FTP command queue exceeds the observation bound")
-        if command in {b"CWD", b"XCWD", b"CDUP", b"XCUP", b"PWD", b"XPWD", b"REIN"}:
+        if command in {b"CWD", b"XCWD", b"CDUP", b"XCUP", b"PWD", b"XPWD", b"REIN", b"AUTH"}:
             path = argument if command in {b"CWD", b"XCWD"} and len(argument) <= PATH_LIMIT else b""
             self.pending.append((command, path))
         else:
@@ -231,7 +276,10 @@ class FTPRequests:
             command, argument = self.pending.popleft()
             if not code.startswith(b"2"):
                 return
-            if command in {b"CWD", b"XCWD"} and code == b"250":
+            if command == b"AUTH" and code == b"234":
+                self.opaque = True
+                self.pending.clear()
+            elif command in {b"CWD", b"XCWD"} and code == b"250":
                 new = ftp_path(argument, self.cwd)
                 self.cwd = new if new and new.startswith("/") else None
             elif command in {b"CDUP", b"XCUP"} and code in {b"200", b"250"}:

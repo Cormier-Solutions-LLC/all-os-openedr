@@ -51,7 +51,7 @@ from all_os_openedr.network_trace import MAX_ACCOUNT_EVENTS_PER_SECOND, MAX_ACTO
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
-from all_os_openedr.protocol_observations import HEADER_BYTES, SYN, Packet, ProtocolTrace
+from all_os_openedr.protocol_observations import CLOSED_SOCKET, HEADER_BYTES, SYN, Packet, ProtocolTrace
 from all_os_openedr.removable_copies import PATH_BYTES, TransferLog, TransferTrace, Volume
 from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
@@ -621,6 +621,15 @@ assert request["openedr_request_path"] == "/fixed"
 http.skip(0, len(bad_body) - 2)
 framed = format(len(bad_body), "x").encode() + b"\r\n" + bad_body + b"\r\n0\r\nX-Ignored: secret\r\n\r\n"
 assert [e["openedr_request_path"] for e in http.feed(0, chunked + framed + tail)] == ["/chunk", "/last"]
+http = HTTPRequests()
+assert len(list(http.feed(0, b"GET /switch HTTP/1.1\r\nUpgrade: example\r\n\r\n"))) == 1
+assert list(http.feed(1, b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nx")) == []
+assert list(http.feed(1, b"yz")) == []
+assert [e["openedr_request_path"] for e in http.feed(0, tail)] == ["/last"]
+assert list(http.feed(1, b"HTTP/1.1 204 No Content\r\n\r\n")) == []
+assert len(list(http.feed(0, b"GET /switch HTTP/1.1\r\nUpgrade: example\r\n\r\n"))) == 1
+assert list(http.feed(1, b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: example\r\n\r\n")) == []
+assert list(http.feed(0, tail)) == []
 try:
     list(HTTPRequests().feed(0, b"POST /ambiguous HTTP/1.1\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n"))
 except ValueError:
@@ -650,7 +659,14 @@ assert list(ftp.feed(0, b"CDUP\r\n")) == []
 assert list(ftp.feed(1, b"250 Directory changed\r\n")) == []
 request, = ftp.feed(0, b"RETR ../new\r\n")
 assert request["openedr_request_path"] == "../new" and request["openedr_request_path_scope"] == "relative"
-assert list(ftp.feed(0, b"AUTH TLS\r\nRETR secret\r\n")) == []
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+assert list(ftp.feed(0, b"AUTH TLS\r\n")) == []
+assert list(ftp.feed(1, b"534 Upgrade rejected\r\n")) == []
+request, = ftp.feed(0, b"RETR visible\r\n")
+assert request["openedr_request_path"] == "visible"
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+assert list(ftp.feed(0, b"AUTH TLS\r\n")) == []
+assert list(ftp.feed(1, b"234 Starting TLS\r\n")) == []
 assert list(ftp.feed(0, b"RETR secret\r\n")) == []
 protocol = ProtocolTrace("boot", "host", 100)
 packet = Packet()
@@ -673,6 +689,8 @@ observed, = protocol_feed(2, b"example HTTP/1.1\r\nHost: example.test\r\n\r\n")
 assert observed["openedr_file_actor_id"] == started["openedr_file_actor_id"]
 assert observed["openedr_request_path"] == "/example"
 assert observed["openedr_network_attribution"] == "socket_connect_actor"
+assert list(protocol.receive_packet(CLOSED_SOCKET.pack(packet.cookie, packet.actor.connected))) == []
+assert not protocol.flows
 packet.actor.connected += 1
 assert protocol_feed(40, flags=SYN) == []
 discontinuity, = protocol_feed(44, b"GET /later HTTP/1.1\r\n\r\n")
