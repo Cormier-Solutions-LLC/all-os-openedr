@@ -28,12 +28,13 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
-from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status, script_shell
+from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status, sandbox_identity, script_shell
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.launch_broker import MAX_MESSAGE, parse_policy, receive_message, send_message, service
+from all_os_openedr.manager import CONTAINMENT_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.response import apply, decode_token
@@ -447,6 +448,30 @@ assert namespace_status(BytesIO(status), 42) == 456
 assert namespace_status(BytesIO(status), 0) is None
 assert namespace_status(BytesIO(status.splitlines()[0]), 42) is None
 assert namespace_status(BytesIO(b'[]\n{"exit-code":42}\n'), 42) is None
+assert sandbox_identity(status) == {"openedr_containment_pid": 456, "openedr_containment_pid_namespace": 789}
+assert sandbox_identity(status.splitlines()[0]) is None
+assert sandbox_identity(b'{"child-pid":true}\n') is None
+assert sandbox_identity(b'{"child-pid":456,"pid-namespace":true}\n') == {"openedr_containment_pid": 456}
+launch_id = "a" * 32
+assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id)
+assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id + "?id=other") is None
+creation = {
+    "openedr_source": "all-os-openedr", "openedr_event": "executable.sandbox_created",
+    "openedr_containment_launch_id": launch_id, "openedr_requester_uid": 1000,
+    "openedr_executable_path": "/path-that-must-stay-out-of-the-api",
+}
+other_launch = {**creation, "openedr_containment_launch_id": "b" * 32}
+other_event = {**creation, "openedr_event": "process.exec"}
+payload = {"hits": {"hits": [{"_source": {"data": event}} for event in (creation, other_launch, other_event)]}}
+index = Index.__new__(Index)
+index.base, index.authorization = "https://index.invalid/openedr-alerts-v1-*", "Basic fixture"
+index.client = SimpleNamespace(open=lambda *_args, **_kwargs: None)
+with patch.object(index.client, "open", return_value=BytesIO(json.dumps(payload).encode())) as open_search:
+    matches = index.search(4, launch_id=launch_id)
+    assert matches == [{key: value for key, value in creation.items() if key != "openedr_executable_path"}]
+    request = json.loads(open_search.call_args.args[0].data)
+    assert request["size"] == 4
+    assert {"term": {"data.openedr_containment_launch_id": launch_id}} in request["query"]["bool"]["filter"]
 for header, expected in (
     (b"#!/bin/sh\n", ("dash", ())),
     (b"#!\t/usr/bin/dash -eu\n", ("dash", ("-eu",))),
@@ -511,6 +536,7 @@ launch_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
 assert launch_rules.find("rule[@id='110120']/field").attrib["name"] == "openedr_event"
 assert launch_rules.findtext("rule[@id='110121']/if_sid") == "110120"
 assert launch_rules.findtext("rule[@id='110122']/if_sid") == "110120"
+assert re.fullmatch(launch_rules.findtext("rule[@id='110123']/field"), creation["openedr_event"])
 samba_feed = ElementTree.parse(integration / "samba-localfile.xml")
 assert samba_feed.findtext("location") == "/var/log/samba/openedr-share-audit.log"
 assert samba_feed.findtext("log_format") == "syslog"
@@ -555,6 +581,8 @@ for key, field_type in (
     ("openedr_containment_exit_code", "integer"),
     ("openedr_containment_pid", "long"),
     ("openedr_containment_application", "keyword"),
+    ("openedr_containment_launch_id", "keyword"),
+    ("openedr_containment_pid_namespace", "long"),
     ("openedr_requester_uid", "long"),
 ):
     assert fields[key]["type"] == field_type

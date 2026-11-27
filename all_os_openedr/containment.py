@@ -10,7 +10,9 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +26,7 @@ BUBBLEWRAP = "/usr/bin/bwrap"
 PROGRAM = "/run/openedr/program"
 LAUNCH_FAILED = 125
 MEMFD_NOEXEC = getattr(os, "MFD_NOEXEC_SEAL", 0x0008)  # Linux 6.3+.
+STATUS_LIMIT = 4096
 GLIBC_AMD64 = (
     ("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "/lib64/ld-linux-x86-64.so.2"),
     ("/usr/lib/x86_64-linux-gnu/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6"),
@@ -58,7 +61,7 @@ def write_filter(target):
 def namespace_status(status, code):
     status.seek(0)
     try:
-        records = [json.loads(line) for line in status.read(4096).splitlines()]
+        records = [json.loads(line) for line in status.read(STATUS_LIMIT).splitlines()]
     except (UnicodeError, ValueError):
         return None
     if len(records) != 2 or not all(isinstance(record, dict) for record in records):
@@ -67,6 +70,54 @@ def namespace_status(status, code):
     if type(pid) is int and pid > 0 and records[1] == {"exit-code": code}:
         return pid
     return None
+
+
+def sandbox_identity(data):
+    line, newline, _ = data.partition(b"\n")
+    if not newline:
+        return None
+    try:
+        record = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    pid = record.get("child-pid")
+    if type(pid) is not int or not 0 < pid < 2**31:
+        return None
+    identity = {"openedr_containment_pid": pid}
+    namespace = record.get("pid-namespace")
+    if type(namespace) is int and 0 < namespace < 2**63:
+        identity["openedr_containment_pid_namespace"] = namespace
+    return identity
+
+
+def run_backend(command, descriptors, status_fd, timeout, on_created):
+    with subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        pass_fds=descriptors, env={"PATH": "/usr/bin"},
+    ) as process:
+        deadline = time.monotonic() + timeout
+        identity = None
+        try:
+            while process.poll() is None:
+                identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
+                if identity is not None:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(min(0.05, remaining))
+            if identity is None:
+                # A short-lived child can write the status and exit between reads.
+                identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
+            if identity is not None:
+                with suppress(OSError):
+                    on_created(identity)
+            return process.wait(timeout=max(0, deadline - time.monotonic()))
+        finally:
+            if process.poll() is None:
+                process.kill()
 
 
 def script_shell(snapshot):
@@ -95,7 +146,7 @@ def script_shell(snapshot):
     return shell, tuple(option.decode("ascii") for option in options)
 
 
-def sandbox(snapshot, arguments, timeout, script=None):
+def sandbox(snapshot, arguments, timeout, script, on_created):
     snapshot.flush()
     snapshot.seek(0)
     fd = snapshot.fileno()
@@ -144,18 +195,15 @@ def sandbox(snapshot, arguments, timeout, script=None):
             "--", *entrypoint, *arguments,
         ]
         try:
-            result = subprocess.run(
-                command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                pass_fds=(fd, status_fd, filter_fd), env={"PATH": "/usr/bin"}, timeout=timeout,
-            )
+            code = run_backend(command, (fd, status_fd, filter_fd), status_fd, timeout, on_created)
         except subprocess.TimeoutExpired:
             return LAUNCH_FAILED, "sandbox_timeout", None
         except OSError:
             return LAUNCH_FAILED, "sandbox_backend_unavailable", None
-        pid = namespace_status(status, result.returncode)
+        pid = namespace_status(status, code)
         if pid is None:
             return LAUNCH_FAILED, "sandbox_failed", None
-        return result.returncode, "isolated", pid
+        return code, "isolated", pid
 
 
 def trusted_location(path, metadata):
@@ -179,13 +227,20 @@ def has_volume_approval(fd, digest):
     return approval == IMA_SHA256_PREFIX + bytes.fromhex(digest)
 
 
-def emit(event, decision, reason, **details):
+def write_record(event):
     print(json.dumps({
+        **event,
+        "openedr_observed_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+    }, separators=(",", ":")), file=sys.stderr, flush=True)
+
+
+def emit(event, decision, reason, **details):
+    write_record({
         **event,
         "openedr_containment_decision": decision,
         "openedr_containment_reason": reason,
         **details,
-    }, separators=(",", ":")), file=sys.stderr, flush=True)
+    })
 
 
 def launch(options, event, *, delegated=False, reporter=None):
@@ -271,8 +326,18 @@ def launch(options, event, *, delegated=False, reporter=None):
                 except OSError:
                     report({**event, "openedr_event_id": uuid.uuid4().hex}, "blocked", "native_exec_failed")
                     return LAUNCH_FAILED
-            exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script)
-            details = {"openedr_containment_exit_code": exit_code}
+            creation = {}
+
+            def on_created(identity):
+                creation.update(identity)
+                write_record({
+                    **event, **identity,
+                    "openedr_event": "executable.sandbox_created",
+                    "openedr_event_id": uuid.uuid4().hex,
+                })
+
+            exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created)
+            details = {**creation, "openedr_containment_exit_code": exit_code}
             if pid is not None:
                 details["openedr_containment_pid"] = pid
                 if verdict == "unknown":
@@ -288,11 +353,13 @@ def launch(options, event, *, delegated=False, reporter=None):
 
 
 def launch_event(program=None):
+    launch_id = uuid.uuid4().hex
     event = {
         "openedr_source": "all-os-openedr",
         "openedr_schema": 1,
         "openedr_event": "executable.launch_decision",
-        "openedr_event_id": uuid.uuid4().hex,
+        "openedr_event_id": launch_id,
+        "openedr_containment_launch_id": launch_id,
         "openedr_host": socket.gethostname(),
         "openedr_boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
         "openedr_observed_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
