@@ -612,6 +612,9 @@ headers = b"?token=secret HTTP/1.1\r\nAuthorization: Basic secret\r\n\r\n"
 request, = http.feed(0, headers)
 assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
                    "openedr_request_host": "example.test", "openedr_request_path": "/a"}
+request, = http.feed(0, b"GET //nested/path;token=secret?query=secret HTTP/1.1\r\nHost: origin.test\r\n\r\n")
+assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
+                   "openedr_request_host": "origin.test", "openedr_request_path": "//nested/path"}
 bad_body = b"GET /fake HTTP/1.1\r\n\r\n"
 fixed = b"POST /fixed HTTP/1.1\r\nContent-Length: " + str(len(bad_body)).encode() + b"\r\n\r\n"
 chunked = b"POST /chunk HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"

@@ -38,9 +38,8 @@ def authority(value):
 
 def request_target(raw, host):
     target = raw.decode("ascii")
-    if target.startswith("//"):
-        return None
     if target.startswith("/"):
+        # HTTP origin-form permits consecutive slashes in the path.
         path = target.split("?", 1)[0].split("#", 1)[0]
     else:
         parts = urlsplit(target)
