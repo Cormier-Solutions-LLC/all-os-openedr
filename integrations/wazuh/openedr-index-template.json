@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 21,
+  "version": 22,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -153,6 +153,7 @@
             "openedr_network_socket_id": {"type": "keyword"},
             "openedr_network_direction": {"type": "keyword"},
             "openedr_network_transport": {"type": "keyword"},
+            "openedr_network_attribution": {"type": "keyword"},
             "openedr_network_namespace": {"type": "long", "coerce": true},
             "openedr_network_monotonic_ns": {"type": "long", "coerce": true},
             "openedr_network_ip_version": {"type": "integer"},
@@ -162,6 +163,11 @@
             "openedr_network_remote_port": {"type": "integer"},
             "openedr_dns_name": {"type": "keyword", "ignore_above": 1024},
             "openedr_dns_type": {"type": "keyword"},
+            "openedr_application_protocol": {"type": "keyword"},
+            "openedr_request_method": {"type": "keyword"},
+            "openedr_request_host": {"type": "keyword"},
+            "openedr_request_path": {"type": "keyword", "ignore_above": 1024},
+            "openedr_request_path_scope": {"type": "keyword"},
             "openedr_process": {"type": "keyword", "ignore_above": 256}
           }
         }

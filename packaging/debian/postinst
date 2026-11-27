@@ -3,7 +3,7 @@ set -eu
 if [ "$1" = configure ]; then
     deb-systemd-helper update-state all-os-openedr-launch.socket all-os-openedr-containment-audit.service \
         all-os-openedr-health.timer all-os-openedr-removable-storage.service all-os-openedr-removable-copies.service \
-        all-os-openedr-tcp.service all-os-openedr-dns.service >/dev/null
+        all-os-openedr-tcp.service all-os-openedr-dns.service all-os-openedr-protocol.service >/dev/null
 fi
 if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
     systemctl daemon-reload
@@ -11,6 +11,6 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
         deb-systemd-invoke try-restart all-os-openedr.service all-os-openedr-lifecycle.service \
             all-os-openedr-file-provenance.service all-os-openedr-executable.service all-os-openedr-containment-audit.service \
             all-os-openedr-health.timer all-os-openedr-removable-storage.service all-os-openedr-removable-copies.service \
-            all-os-openedr-tcp.service all-os-openedr-dns.service
+            all-os-openedr-tcp.service all-os-openedr-dns.service all-os-openedr-protocol.service
     fi
 fi

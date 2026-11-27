@@ -69,6 +69,26 @@ A client sending to a local stub and the stub sending upstream produce separate 
 
 Merge the packaged `dns-localfile.xml` into the Wazuh agent and update `110100-openedr_rules.xml` on the manager. Rule `110137` reports questions and rule `110138` reports detected gaps. Apply OpenSearch template version 21 to new dedicated indices or add its DNS fields to current mappings. The DNS service uses the same retention and output quotas as the TCP service, with a separate log and budget.
 
+### Investigate HTTP and FTP requests
+
+Enable the optional protocol sensor on Debian 13 amd64 with the standard BTF-enabled kernel and a unified cgroup hierarchy. The service compiles its packaged BPF source locally when it starts and observes the host cgroup hierarchy. Run it in the host PID and time namespaces.
+
+~~~sh
+sudo apt install clang-19 libbpf-dev libc6-dev linux-libc-dev
+sudo systemctl enable --now all-os-openedr-protocol.service
+sudo tail /var/log/all-os-openedr-protocol/events.jsonl
+~~~
+
+The sensor uses kernel socket and process lifetime identities. It observes IPv4 and IPv6 HTTP/1.0 and HTTP/1.1 GET and POST requests on outbound TCP port 80 and FTP RETR on outbound TCP port 21. Adjacent segments and retransmissions feed bounded stream parsers. The HTTP sensor follows Content-Length and chunked framing across requests on reused connections. FTP records the requested path and adds observed working-directory context from successful CWD or PWD replies. It preserves dot components because the server can resolve them through symlinks. After a successful CDUP, relative requests stay relative until a later reply provides a directory path.
+
+Request records contain the method, endpoint tuple, and connecting process identity. When the bounded path can be represented, it is included. If only the method can be retained, the path scope is `unavailable`. This covers oversized paths and FTP arguments that resemble URLs. For HTTP, a valid hostname is retained with the represented path when available. The parser discards URL userinfo, queries, fragments, path parameters, credentials headers, and bodies from records. FTP credential commands and file contents are excluded from records. The collector processes bounded TCP bytes in memory and disables core dumps. Access controls on the evidence log also apply to hostnames and paths. [HTTP/1.1 message framing](https://www.rfc-editor.org/rfc/rfc9112.html) · [FTP control protocol](https://www.rfc-editor.org/rfc/rfc959.html)
+
+The application socket ID binds the kernel socket cookie to the observed connection. Match these records to the separate TCP connection stream using the Wazuh agent ID, boot ID, network namespace, process lifetime, endpoint tuple, and monotonic observation window. The actor represents the connecting process when other processes inherit or share its socket.
+
+The sensor starts from an observed TCP handshake and releases tracking when the kernel closes the socket. Gaps, reordered segments beyond the observed sequence, or unsupported framing stop interpretation for the affected connection. IP fragmentation and IPv6 extension headers are outside the current packet parser. HTTP stops plaintext interpretation after a matching upgrade or a successful CONNECT, and FTP stops after the server accepts AUTH TLS. Rejected switches leave plaintext observation active. An invalid HTTP switch produces a stream gap. HTTPS and encrypted FTP payloads remain opaque. The TCP service can still report their connection metadata.
+
+Merge the packaged `protocol-localfile.xml` into the Wazuh agent and update `110100-openedr_rules.xml` on the manager. Rule `110139` reports request metadata and rule `110140` reports detected gaps. Apply OpenSearch template version 22 to new dedicated indices or add its fields to existing mappings. The service applies separate packet quotas per process and account, along with the normal event quotas and log retention. The kernel tracks up to 128 active protocol socket actors per UID. Capacity warnings preserve already tracked connections. The stanza resumes unread events from the active 16 MiB log after the Wazuh collector restarts. A prolonged outage can leave earlier events in rotated files that require separate recovery. [Wazuh log collector configuration](https://documentation.wazuh.com/current/user-manual/reference/ossec-conf/localfile.html#only-future-events)
+
 ### Trace file activity on a mounted filesystem
 
 The optional Debian file provenance service monitors an explicitly chosen filesystem recursively. It reports opens, accesses, modifications, metadata changes, closes, creations, deletions, execution opens, and renames. File IDs are derived from the boot, filesystem, and Linux file handle. Renames carry the kernel-reported source and destination names when both directory entries are available. Display paths use directory handles resolved at collection time. Use the file ID to follow a file through path changes.

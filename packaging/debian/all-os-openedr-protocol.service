@@ -1,0 +1,26 @@
+[Unit]
+Description=All OS OpenEDR HTTP and FTP request evidence
+After=local-fs.target
+ConditionArchitecture=x86-64
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/lib/all-os-openedr
+RuntimeDirectory=all-os-openedr-protocol
+RuntimeDirectoryMode=0700
+LogsDirectory=all-os-openedr-protocol
+LogsDirectoryMode=0750
+UMask=0077
+ExecStartPre=/usr/bin/clang-19 -Werror -g -O2 -mcpu=v3 -target bpf -I/usr/include/x86_64-linux-gnu -c /usr/share/all-os-openedr/network/protocol-observations.bpf.c -o /run/all-os-openedr-protocol/protocol.bpf.o
+ExecStart=/usr/bin/python3 -B -m all_os_openedr.protocol_observations
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN
+LimitMEMLOCK=infinity
+LimitCORE=0
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

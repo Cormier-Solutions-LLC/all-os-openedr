@@ -1,0 +1,5 @@
+<localfile>
+  <location>/var/log/all-os-openedr-protocol/events.jsonl</location>
+  <log_format>json</log_format>
+  <only-future-events max-size="16MB">no</only-future-events>
+</localfile>
