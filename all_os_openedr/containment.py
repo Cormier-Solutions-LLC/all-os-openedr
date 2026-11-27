@@ -26,6 +26,7 @@ from .ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, select_filesystem
 BUBBLEWRAP = "/usr/bin/bwrap"
 PROGRAM = "/run/openedr/program"
 DOCUMENT = "/run/openedr/document"
+EXPORT = "/run/openedr/export"
 LAUNCH_FAILED = 125
 MEMFD_NOEXEC = getattr(os, "MFD_NOEXEC_SEAL", 0x0008)  # Linux 6.3+.
 IMMUTABLE_SEALS = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
@@ -186,7 +187,7 @@ def script_shell(snapshot):
     return shell, tuple(option.decode("ascii") for option in options)
 
 
-def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, document=None, cancelled=None):
+def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, document=None, export=None, cancelled=None):
     snapshot.flush()
     snapshot.seek(0)
     fd = snapshot.fileno()
@@ -229,6 +230,9 @@ def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, d
             bindings.extend(("--perms", "0444", "--ro-bind-data", str(document), DOCUMENT))
             descriptors += (document,)
             arguments = (*arguments, DOCUMENT)
+        if export is not None:
+            bindings.extend(("--bind", export, EXPORT))
+            arguments = (*arguments, EXPORT)
         command = [
             BUBBLEWRAP, "--unshare-user", "--disable-userns", "--unshare-pid", "--unshare-net",
             "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--new-session", "--die-with-parent",
@@ -290,7 +294,7 @@ def emit(event, decision, reason, **details):
     })
 
 
-def launch(options, event, *, delegated=False, reporter=None, streams=None, document=None, cancelled=None):
+def launch(options, event, *, delegated=False, reporter=None, streams=None, document=None, export=None, cancelled=None):
     report = reporter or emit
     volume_device = None
     if delegated and options.execution_volume is None:
@@ -362,7 +366,8 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, docu
                     report(event, "blocked", "unsupported_interpreter")
                     return LAUNCH_FAILED
                 event["openedr_containment_interpreter"] = script[0]
-            if (not delegated and document is None and script is None and verdict == "trusted" and trusted_location(path, metadata)
+            if (not delegated and document is None and export is None and script is None and verdict == "trusted"
+                    and trusted_location(path, metadata)
                     and file_version(metadata) == file_version(os.fstat(fd))):
                 if volume_device is not None and not has_volume_approval(fd, digest):
                     report(event, "blocked", "ima_approval_missing")
@@ -384,7 +389,7 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, docu
                 })
 
             exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created,
-                                              streams=streams, document=document, cancelled=cancelled)
+                                              streams=streams, document=document, export=export, cancelled=cancelled)
             details = {**creation, "openedr_containment_exit_code": exit_code}
             if pid is not None:
                 details["openedr_containment_pid"] = pid

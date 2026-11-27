@@ -288,7 +288,7 @@ Apply the policy at boot with the volume enrolled as described above. Keep the s
   "uuid": "REPLACE_WITH_VOLUME_UUID",
   "catalog": "/etc/all-os-openedr-executable-verdicts.json",
   "applications": {
-    "my-app": {"program": "my-app", "uids": [1000], "arguments": [], "interactive": true, "document": true}
+    "my-app": {"program": "my-app", "uids": [1000], "arguments": [], "interactive": true, "document": true, "export": true}
   }
 }
 ```
@@ -309,6 +309,8 @@ Exec=/usr/bin/all-os-openedr-run --interactive --document %f my-app
 Terminal=true
 MimeType=text/plain;
 ```
+
+Set `export` to `true` for a command that can write to a pre-created output file. `all-os-openedr-run --document "./document.txt" --export "./edited.txt" my-app` passes `/run/openedr/document` followed by `/run/openedr/export` after any fixed arguments. The application can modify the export file in place within a private memory-backed filesystem. The client saves the result only when the isolated application exits successfully and the export is at most 8 MiB. The user chooses a new destination on a local filesystem that supports anonymous temporary files, such as ext4. The client creates the destination atomically with owner-only permissions and leaves existing files and symlinks untouched. The client keeps the destination out of the broker request and sandbox. [Linux anonymous temporary files](https://manpages.debian.org/trixie/manpages-dev/open.2.en.html)
 
 Test the direct IMA denial, authorized request, and unauthorized request as ordinary users before enrollment. The JSON launch record includes the authenticated caller UID and the enrolled application name for authorized requests. Wazuh uses the existing isolated and blocked launch rules. Apply the updated OpenSearch template for new indices. Stop and disable the socket to withdraw delegated launch access.
 

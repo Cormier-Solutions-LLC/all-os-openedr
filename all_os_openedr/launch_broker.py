@@ -12,6 +12,7 @@ import socket
 import stat
 import struct
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -21,11 +22,13 @@ from types import SimpleNamespace
 
 from .apparmor_policy import trusted_file
 from .containment import IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_event
+from .executable import file_version
 from .sandbox_audit import start_audit_session
 
 
 SOCKET_PATH = "/run/all-os-openedr-launch.sock"
 POLICY_PATH = Path("/etc/all-os-openedr-launch.json")
+EXPORT_DIRECTORY = "/run/all-os-openedr-export"
 APPLICATION = re.compile(r"[a-z][a-z0-9-]{0,63}")
 MAX_MESSAGE = 4096
 MAX_POLICY = 65536
@@ -35,6 +38,7 @@ DOCUMENT_LIMIT = 8 * 1024 * 1024
 DOCUMENT_LENGTH = struct.Struct("!I")
 PEER = struct.Struct("=iII")
 IO_READY = {"ready_for_io": True}
+IO_OPTIONS = ("interactive", "document", "export")
 
 
 def receive_message(connection, timeout):
@@ -73,36 +77,60 @@ def read_document(path):
     return data
 
 
-@contextmanager
-def receive_document(connection):
-    deadline = time.monotonic() + 3
-
-    def receive(count):
+def receive_chunks(connection, size, deadline):
+    while size:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Document transfer expired")
         connection.settimeout(remaining)
-        chunk = connection.recv(count)
+        chunk = connection.recv(min(size, 65536))
         if not chunk:
             raise ValueError("Incomplete document transfer")
-        return chunk
+        size -= len(chunk)
+        yield chunk
 
-    header = bytearray()
-    while len(header) < DOCUMENT_LENGTH.size:
-        header.extend(receive(DOCUMENT_LENGTH.size - len(header)))
+
+@contextmanager
+def receive_document(connection):
+    deadline = time.monotonic() + 3
+    header = b"".join(receive_chunks(connection, DOCUMENT_LENGTH.size, deadline))
     size, = DOCUMENT_LENGTH.unpack(header)
     if size > DOCUMENT_LIMIT:
         raise ValueError("Document exceeds the size limit")
     fd = os.memfd_create("openedr-document", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
     with os.fdopen(fd, "w+b") as snapshot:
-        while size:
-            data = receive(min(size, 65536))
-            snapshot.write(data)
-            size -= len(data)
+        for chunk in receive_chunks(connection, size, deadline):
+            snapshot.write(chunk)
         snapshot.flush()
         snapshot.seek(0)
         fcntl.fcntl(fd, fcntl.F_ADD_SEALS, IMMUTABLE_SEALS)
         yield fd
+
+
+def read_export(fd):
+    before = os.fstat(fd)
+    if before.st_size > DOCUMENT_LIMIT:
+        raise ValueError("Export exceeds the size limit")
+    data = os.pread(fd, DOCUMENT_LIMIT + 1, 0)
+    if len(data) != before.st_size or file_version(before) != file_version(os.fstat(fd)):
+        raise ValueError("Export changed while being read")
+    return data
+
+
+def save_export(connection, path, size):
+    directory = os.open(path.parent, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        flags = os.O_TMPFILE | os.O_WRONLY | os.O_CLOEXEC
+        with os.fdopen(os.open(".", flags, 0o600, dir_fd=directory), "wb") as output:
+            connection.settimeout(3)
+            connection.sendall(b"E")
+            for chunk in receive_chunks(connection, size, time.monotonic() + 3):
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+            os.link(f"/proc/self/fd/{output.fileno()}", path.name, dst_dir_fd=directory, follow_symlinks=True)
+    finally:
+        os.close(directory)
 
 
 @contextmanager
@@ -152,8 +180,8 @@ def parse_policy(value):
     required = {"program", "uids", "arguments"}
     for name, app in applications.items():
         if (not APPLICATION.fullmatch(name) or not isinstance(app, dict)
-                or not required <= app.keys() <= required | {"interactive", "document"}
-                or any(type(app.get(key, False)) is not bool for key in ("interactive", "document"))):
+                or not required <= app.keys() <= required.union(IO_OPTIONS)
+                or any(type(app.get(key, False)) is not bool for key in IO_OPTIONS)):
             raise ValueError("Invalid application policy")
         program, uids, arguments = app["program"], app["uids"], app["arguments"]
         if (not isinstance(program, str) or "\0" in program or not Path(program).parts
@@ -199,9 +227,9 @@ def service(connection):
     except (OSError, ValueError, RecursionError):
         block("invalid_request")
         return
-    if (not isinstance(request, dict) or not {"application"} <= request.keys() <= {"application", "interactive", "document"}
+    if (not isinstance(request, dict) or not {"application"} <= request.keys() <= {"application", *IO_OPTIONS}
             or not isinstance(request["application"], str) or not APPLICATION.fullmatch(request["application"])
-            or any(request.get(key, True) is not True for key in ("interactive", "document"))):
+            or any(request.get(key, True) is not True for key in IO_OPTIONS)):
         block("invalid_request")
         return
     try:
@@ -215,14 +243,11 @@ def service(connection):
         block("request_not_authorized")
         return
     event["openedr_containment_application"] = name
-    interactive = request.get("interactive", False)
-    document = request.get("document", False)
-    if interactive and not app.get("interactive", False):
-        block("interactive_not_allowed")
-        return
-    if document and not app.get("document", False):
-        block("document_not_allowed")
-        return
+    requested = request.keys() - {"application"}
+    for key in IO_OPTIONS:
+        if key in requested and not app.get(key, False):
+            block(f"{key}_not_allowed")
+            return
     if os.environ.get("OPENEDR_CONTAINMENT_AUDIT") == "1":
         session_id = start_audit_session(os.getuid())
         if session_id is not None:
@@ -231,9 +256,10 @@ def service(connection):
         catalog=catalog, execution_volume=(filesystem, volume), program=Path(filesystem) / app["program"],
         arguments=app["arguments"], timeout=LAUNCH_TIMEOUT,
     )
+    exported = None
     with ExitStack() as stack:
         launch_io = {}
-        if interactive or document:
+        if requested:
             send_message(connection, IO_READY)
 
             # EOF or additional control data ends the session. Input EOF arrives on the pipe.
@@ -241,24 +267,42 @@ def service(connection):
                 return bool(select.select([connection], [], [], 0)[0])
 
             launch_io["cancelled"] = cancelled
-        if document:
+        if "document" in requested:
             try:
                 launch_io["document"] = stack.enter_context(receive_document(connection))
             except (OSError, ValueError):
                 block("invalid_document")
                 return
-        if interactive:
+        if "interactive" in requested:
             try:
                 launch_io["streams"] = stack.enter_context(receive_pipes(connection))
             except (OSError, ValueError):
                 block("invalid_interactive_streams")
                 return
+        target = None
+        if "export" in requested:
+            try:
+                target = stack.enter_context(tempfile.NamedTemporaryFile(dir=EXPORT_DIRECTORY))
+            except OSError:
+                block("export_unavailable")
+                return
+            launch_io["export"] = target.name
         try:
             code = launch(options, event, delegated=True, reporter=report, **launch_io)
         except (OSError, ValueError, RuntimeError):
             block("launch_failed")
             return
+        if target is not None and code == 0 and reply.get("decision") == "isolated":
+            try:
+                exported = read_export(target.fileno())
+            except (ValueError, OSError):
+                reply["reason"] = "export_unavailable"
+                code = LAUNCH_FAILED
+            else:
+                reply["export_size"] = len(exported)
     send_message(connection, {**reply, "exit_code": code})
+    if exported is not None and connection.recv(1) == b"E":
+        connection.sendall(exported)
 
 
 def service_main():
@@ -321,11 +365,27 @@ def exchange_pipes(connection):
             os.close(output_read)
 
 
+def validate_reply(reply, export_requested):
+    fields = {"decision", "reason", "event_id", "exit_code"}
+    if not isinstance(reply, dict):
+        raise ValueError("Invalid launch result")
+    if export_requested and reply.get("decision") == "isolated" and reply.get("exit_code") == 0:
+        fields.add("export_size")
+    if (set(reply) != fields or reply["decision"] not in ("blocked", "isolated")
+            or not isinstance(reply["reason"], str) or not re.fullmatch(r"[a-z_]{1,64}", reply["reason"])
+            or not isinstance(reply["event_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", reply["event_id"])
+            or type(reply["exit_code"]) is not int or not 0 <= reply["exit_code"] <= 255):
+        raise ValueError("Invalid launch result")
+    if "export_size" in fields and (type(reply["export_size"]) is not int or not 0 <= reply["export_size"] <= DOCUMENT_LIMIT):
+        raise ValueError("Invalid export size")
+
+
 def client_main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("application", help="application name from the administrator's launch policy")
     parser.add_argument("--interactive", action="store_true", help="connect standard input and plain-text output")
     parser.add_argument("--document", type=Path, help="provide a read-only copy of a selected local file")
+    parser.add_argument("--export", type=Path, help="save a successful export as a new local file")
     options = parser.parse_args()
     if not APPLICATION.fullmatch(options.application):
         parser.error("Use a lowercase application name with letters, digits, and hyphens")
@@ -345,9 +405,11 @@ def client_main():
                 request["interactive"] = True
             if document is not None:
                 request["document"] = True
+            if options.export is not None:
+                request["export"] = True
             send_message(connection, request)
             reply = receive_message(connection, LAUNCH_TIMEOUT + 10)
-            if (options.interactive or document is not None) and reply == IO_READY:
+            if len(request) > 1 and reply == IO_READY:
                 if document is not None:
                     connection.settimeout(3)
                     connection.sendall(DOCUMENT_LENGTH.pack(len(document)))
@@ -356,12 +418,13 @@ def client_main():
                     print("Contained application exceeded the 256 KiB output limit", file=sys.stderr)
                     return LAUNCH_FAILED
                 reply = receive_message(connection, LAUNCH_TIMEOUT + 10)
-        if (not isinstance(reply, dict) or set(reply) != {"decision", "reason", "event_id", "exit_code"}
-                or reply["decision"] not in ("blocked", "isolated")
-                or not isinstance(reply["reason"], str) or not re.fullmatch(r"[a-z_]{1,64}", reply["reason"])
-                or not isinstance(reply["event_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", reply["event_id"])
-                or type(reply["exit_code"]) is not int or not 0 <= reply["exit_code"] <= 255):
-            raise ValueError("Invalid launch result")
+            validate_reply(reply, options.export is not None)
+            if "export_size" in reply:
+                try:
+                    save_export(connection, options.export, reply["export_size"])
+                except (OSError, ValueError):
+                    print("Could not save the export as a new local file", file=sys.stderr)
+                    return LAUNCH_FAILED
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError, RecursionError):

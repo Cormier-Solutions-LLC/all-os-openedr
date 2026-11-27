@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Save a bounded export from a successful Debian containment session to a new user-selected file without granting the sandbox access to the destination.
 - Open an explicitly selected document as a read-only snapshot from an enrolled Debian application without granting its host path.
 - Let authorized Debian users provide input and receive plain-text output from opted-in contained commands through anonymous pipes.
 - Observe selected file opens and socket creation results from contained Debian applications without altering enforcement.
