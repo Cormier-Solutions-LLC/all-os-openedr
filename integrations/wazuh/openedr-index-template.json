@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 22,
+  "version": 23,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -55,6 +55,16 @@
             "openedr_response_result": {"type": "keyword"},
             "openedr_health_status": {"type": "keyword"},
             "openedr_health_broker": {"type": "keyword"},
+            "openedr_health_sensors": {"type": "keyword"},
+            "openedr_health_sensor_lifecycle": {"type": "keyword"},
+            "openedr_health_sensor_file_provenance": {"type": "keyword"},
+            "openedr_health_sensor_executable": {"type": "keyword"},
+            "openedr_health_sensor_containment_audit": {"type": "keyword"},
+            "openedr_health_sensor_removable_storage": {"type": "keyword"},
+            "openedr_health_sensor_removable_copies": {"type": "keyword"},
+            "openedr_health_sensor_tcp": {"type": "keyword"},
+            "openedr_health_sensor_dns": {"type": "keyword"},
+            "openedr_health_sensor_protocol": {"type": "keyword"},
             "openedr_health_ima": {"type": "keyword"},
             "openedr_health_forwarder": {"type": "keyword"},
             "openedr_policy_result": {"type": "keyword"},

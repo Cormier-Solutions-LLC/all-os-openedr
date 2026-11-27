@@ -39,7 +39,7 @@ from all_os_openedr.application_protocols import FTPRequests, HTTPRequests
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
 from all_os_openedr.dns_observations import DNSTrace, dns_name
-from all_os_openedr.endpoint_health import broker_health, forwarder_health, sample
+from all_os_openedr.endpoint_health import SENSORS, broker_health, forwarder_health, sample, sensor_health
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, parse_catalog, read_catalog
 from all_os_openedr.executable_policy import policy_event, update_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events, mounted_filesystem_uuid
@@ -1283,10 +1283,35 @@ with TemporaryDirectory() as temporary:
         state_file.chmod(0o666)
         assert forwarder_health() == "state_invalid"
 with patch("all_os_openedr.endpoint_health.broker_health", return_value=("ready", "enforcing")), \
-        patch("all_os_openedr.endpoint_health.forwarder_health", side_effect=("disconnected", "connected")):
+        patch("all_os_openedr.endpoint_health.forwarder_health", side_effect=("disconnected", "connected", "connected")), \
+        patch("all_os_openedr.endpoint_health.sensor_health",
+              side_effect=({"tcp": "active"}, {"tcp": "active"}, {"tcp": "inactive", "dns": "disabled"})):
     degraded = sample()
     assert degraded["openedr_health_status"] == "degraded" and degraded["openedr_health_ima"] == "enforcing"
     assert sample()["openedr_health_status"] == "ready"
+    sensor_failure = sample()
+    assert sensor_failure["openedr_health_status"] == sensor_failure["openedr_health_sensors"] == "degraded"
+    assert sensor_failure["openedr_health_sensor_tcp"] == "inactive"
+    assert sensor_failure["openedr_health_sensor_dns"] == "disabled"
+sensor_cases = {
+    "tcp": ("loaded", "enabled", "active", "running"),
+    "dns": ("loaded", "disabled", "inactive", "dead"),
+    "protocol": ("loaded", "enabled", "activating", "auto-restart"),
+    "executable": ("masked", "masked", "inactive", "dead"),
+    "lifecycle": ("not-found", "", "inactive", "dead"),
+    "removable_copies": ("loaded", "enabled", "failed", "failed"),
+}
+sensor_output = "\n\n".join(
+    f"Id={SENSORS[name]}\nLoadState={load}\nUnitFileState={enabled}\nActiveState={active}\nSubState={sub}"
+    for name, (load, enabled, active, sub) in sensor_cases.items()
+)
+with patch("all_os_openedr.endpoint_health.subprocess.run", return_value=SimpleNamespace(stdout=sensor_output)):
+    states = sensor_health()
+    assert list(states) == list(SENSORS)
+    assert (states["tcp"], states["dns"], states["protocol"], states["executable"],
+            states["lifecycle"], states["removable_copies"], states["containment_audit"]) == (
+                "active", "disabled", "restarting", "masked", "not_installed", "failed", "unavailable",
+            )
 containment = ElementTree.parse(integration / "containment-localfile.xml")
 assert containment.findtext("location") == "/var/log/all-os-openedr-containment/launches.jsonl"
 assert containment.findtext("log_format") == "json"
@@ -1296,6 +1321,7 @@ assert launch_rules.findtext("rule[@id='110130']/if_sid") == "110129"
 assert re.fullmatch(launch_rules.findtext("rule[@id='110131']/field"), mounted["openedr_event"])
 assert re.fullmatch(launch_rules.findtext("rule[@id='110127']/field"), degraded["openedr_event"])
 assert re.fullmatch(launch_rules.findtext("rule[@id='110128']/field"), degraded["openedr_health_status"])
+assert re.fullmatch(launch_rules.findtext("rule[@id='110128']/field"), sensor_failure["openedr_health_status"])
 assert launch_rules.findtext("rule[@id='110128']/if_sid") == "110127"
 health_feed = ElementTree.parse(integration / "health-localfile.xml")
 assert health_feed.findtext("location") == "/var/log/all-os-openedr-health/checks.jsonl"
@@ -1321,6 +1347,8 @@ assert template["index_patterns"] == dedicated_indices
 assert template["template"]["mappings"]["dynamic"] is False
 assert template["version"] >= 2
 fields = template["template"]["mappings"]["properties"]["data"]["properties"]
+assert fields["openedr_health_sensors"]["type"] == "keyword"
+assert all(fields[f"openedr_health_sensor_{name}"]["type"] == "keyword" for name in SENSORS)
 for key, field_type in (
     ("openedr_network_socket_id", "keyword"),
     ("openedr_network_namespace", "long"),

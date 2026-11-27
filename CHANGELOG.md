@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Include the systemd state of enabled kernel sensors in Debian endpoint health evidence and Wazuh alerts.
 - Add opt-in Debian 13 amd64 process and socket evidence for cleartext HTTP GET and POST and FTP RETR over segmented TCP streams.
 - Add opt-in Debian 13 amd64 DNS question evidence for outbound IPv4 and IPv6 UDP A and AAAA lookups, with process identity and resolver endpoints.
 - Add opt-in kernel TCP connection evidence for IPv4 and IPv6 on Debian 13 amd64, with direction, process identity, socket lifetime, and Wazuh rules.
