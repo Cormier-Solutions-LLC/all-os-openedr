@@ -12,7 +12,9 @@ rawtracepoint:sched_process_exec
 {
   $program = str(((struct linux_binprm *)arg2)->filename);
   if ($program == "/run/openedr/program" || $program == "/bin/dash" || $program == "/bin/bash") {
-    @mount_namespace[curtask->sessionid] = curtask->nsproxy->mnt_ns->ns.inum;
+    $session = curtask->sessionid;
+    @mount_namespace[$session] = curtask->nsproxy->mnt_ns->ns.inum;
+    printf("%u %u %llu start 0\n", $session, pid, nsecs);
   }
 }
 
@@ -32,12 +34,13 @@ rawtracepoint:sys_exit
   }
   $session = curtask->sessionid;
   $count = @samples[$session];
-  if ($count < 128) {
+  // Limit traffic to the collector. Its single writer owns the exact event cap.
+  if ($count < 256) {
     printf("%u %u %llu %u %ld\n", $session, pid, nsecs, $operation, (int64)arg1);
-  } else if ($count == 128) {
+  } else if ($count == 256) {
     printf("%u %u %llu limit 0\n", $session, pid, nsecs);
   }
-  if ($count <= 128) {
+  if ($count <= 256) {
     @samples[$session] = $count + 1;
   }
 }
@@ -46,6 +49,9 @@ rawtracepoint:sched_process_exit
 /uid == $1 && pid == tid && @owner[curtask->sessionid] == pid/
 {
   $session = curtask->sessionid;
+  if (@mount_namespace[$session]) {
+    printf("%u %u %llu end 0\n", $session, pid, nsecs);
+  }
   delete(@owner[$session]);
   delete(@mount_namespace[$session]);
   delete(@samples[$session]);

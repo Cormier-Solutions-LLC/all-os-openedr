@@ -19,9 +19,13 @@ LOG = Path("/var/log/all-os-openedr-containment-audit/events.jsonl")
 SCRIPT = "/usr/share/all-os-openedr/containment/decisions.bt"
 RECORD = re.compile(
     rb"(\d{1,10}) (\d{1,10}) (\d{1,19}) "
-    rb"(2|41|85|257|437|limit) (-?\d{1,10})\n"
+    rb"(2|41|85|257|437|start|end|limit) (-?\d{1,10})\n"
 )
 OPERATIONS = {b"2": "open", b"41": "socket", b"85": "creat", b"257": "openat", b"437": "openat2"}
+MAX_RECORDS = 128
+MAX_SESSIONS = 64
+# A delegated broker's systemd unit has a 45-second maximum lifetime.
+SESSION_EXPIRY_NS = 90 * 10**9
 
 
 def start_audit_session(uid, proc=Path("/proc/self")):
@@ -58,8 +62,10 @@ def parse_event(line, host, boot_id, uid):
         "openedr_kernel_monotonic_ns": stamp,
         "openedr_containment_audit_session": session,
     }
-    if probe == b"limit":
-        record["openedr_containment_activity_result"] = "limit_reached"
+    if probe not in OPERATIONS:
+        record["openedr_containment_activity_result"] = {
+            b"start": "started", b"end": "ended", b"limit": "limit_reached",
+        }[probe]
         return record
     operation = OPERATIONS[probe]
     record["openedr_containment_activity_operation"] = operation
@@ -68,6 +74,41 @@ def parse_event(line, host, boot_id, uid):
     if outcome < 0:
         record["openedr_containment_activity_errno"] = -outcome
     return record
+
+
+class ActivityBudget:
+    """Reserve one sample at a time in the collector's single log writer."""
+
+    def __init__(self):
+        self.sessions = {}
+
+    def admit(self, record):
+        session = record["openedr_containment_audit_session"]
+        stamp = record["openedr_kernel_monotonic_ns"]
+        outcome = record["openedr_containment_activity_result"]
+        if outcome == "started":
+            self.sessions = {key: state for key, state in self.sessions.items()
+                             if stamp - state[0] < SESSION_EXPIRY_NS}
+            if len(self.sessions) < MAX_SESSIONS:
+                self.sessions.setdefault(session, (stamp, 0))
+            return None
+        if outcome == "ended":
+            self.sessions.pop(session, None)
+            return None
+        state = self.sessions.get(session)
+        if state is None or not 0 <= stamp - state[0] < SESSION_EXPIRY_NS or state[1] > MAX_RECORDS:
+            return None
+        started, seen = state
+        if outcome == "limit_reached" or seen == MAX_RECORDS:
+            self.sessions[session] = started, MAX_RECORDS + 1
+            return {key: value for key, value in {
+                **record, "openedr_containment_activity_result": "limit_reached",
+            }.items() if key not in (
+                "openedr_containment_activity_class", "openedr_containment_activity_operation",
+                "openedr_containment_activity_errno",
+            )}
+        self.sessions[session] = started, seen + 1
+        return record
 
 
 def main():
@@ -82,12 +123,15 @@ def main():
     host = socket.gethostname()
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     command = ["/usr/bin/bpftrace", "-q", "-B", "line", SCRIPT, str(uid)]
+    budget = ActivityBudget()
     with subprocess.Popen(command, stdout=subprocess.PIPE) as tracer:
         try:
             for line in tracer.stdout:
                 record = parse_event(line, host, boot_id, uid)
                 if record is not None:
-                    append(record, log=LOG)
+                    admitted = budget.admit(record)
+                    if admitted is not None:
+                        append(admitted, log=LOG)
         finally:
             if tracer.poll() is None:
                 tracer.terminate()
