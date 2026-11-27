@@ -98,7 +98,7 @@ with TemporaryDirectory() as temporary:
         f"appraise func={hook} {field}={uid} fowner>0 appraise_type=imasig"
         for uid in (1000, 1001)
         for field in ("uid", "euid")
-        for hook in ("BPRM_CHECK", "MMAP_CHECK mask=MAY_EXEC")
+        for hook in ("BPRM_CHECK", "CREDS_CHECK", "MMAP_CHECK mask=MAY_EXEC")
     ]
     assert list(policy_rules(execution_uuid, 999, appraise_uids=(1001, 1000, 1000))) == rules + expected_user_rules
     assert list(policy_rules(None, appraise_uids=(1001, 1000))) == expected_user_rules

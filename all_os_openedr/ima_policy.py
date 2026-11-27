@@ -54,9 +54,12 @@ def policy_rules(identity, launcher_uid=None, *, appraise_uids=()):
         raise ValueError("Choose non-root appraisal UIDs between 1 and 4294967294")
     if launcher_uid in appraise_uids:
         raise ValueError("Use a separate UID for the containment launcher")
-    if identity is None and (launcher_uid is not None or not appraise_uids):
-        raise ValueError("Select an execution volume or one or more appraisal UIDs")
-    if identity is not None:
+    if identity is None:
+        if launcher_uid is not None:
+            raise ValueError("A launcher read exception requires a managed execution volume")
+        if not appraise_uids:
+            raise ValueError("Select an execution volume or one or more appraisal UIDs")
+    else:
         yield f"appraise func=BPRM_CHECK fsuuid={identity}"
         yield f"appraise func=MMAP_CHECK mask=MAY_EXEC fsuuid={identity}"
     if launcher_uid is not None:
@@ -67,6 +70,7 @@ def policy_rules(identity, launcher_uid=None, *, appraise_uids=()):
         for credential in ("uid", "euid"):
             scope = f"{credential}={uid} fowner>0 appraise_type=imasig"
             yield f"appraise func=BPRM_CHECK {scope}"
+            yield f"appraise func=CREDS_CHECK {scope}"
             yield f"appraise func=MMAP_CHECK mask=MAY_EXEC {scope}"
 
 
