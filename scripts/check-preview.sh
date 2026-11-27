@@ -40,7 +40,7 @@ from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspe
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
-from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, parse_policy, print_output, read_document, receive_document, receive_message, receive_pipes, send_message, service
+from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, parse_policy, print_output, read_document, read_export, receive_document, receive_message, receive_pipes, save_export, send_message, service, validate_reply
 from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_ROUTE, Index
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
@@ -616,7 +616,7 @@ policy = {
 }
 assert parse_policy(policy) == (policy["filesystem"], policy["uuid"], policy["catalog"], policy["applications"])
 for fields in ({"program": "../outside"}, {"program": "/bin/sh"}, {"uids": [True]},
-               {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}):
+               {"arguments": ["x" * 257]}, {"interactive": 1}, {"document": "yes"}, {"export": 1}):
     application = {**policy["applications"]["fixture"], **fields}
     try:
         parse_policy({**policy, "applications": {"fixture": application}})
@@ -655,6 +655,49 @@ for payload in (b"", b"example\0document\xff"):
                     raise AssertionError("Accepted oversized or truncated document upload")
             except ValueError:
                 pass
+with TemporaryDirectory() as directory:
+    destination = Path(directory) / "edited document"
+    payload = b"edited\0bytes\xff"
+    peer, worker = socket.socketpair()
+    with peer, worker:
+        peer.sendall(payload)
+        save_export(worker, destination, len(payload))
+        assert peer.recv(1) == b"E"
+        assert destination.read_bytes() == payload
+        assert destination.stat().st_mode & 0o777 == 0o600
+        with destination.open("rb") as stream:
+            assert read_export(stream.fileno()) == payload
+        alias = destination.with_name("linked document")
+        alias.symlink_to(destination)
+        for existing in (destination, alias):
+            peer.sendall(b"changed")
+            try:
+                save_export(worker, existing, 7)
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("Export overwrote an existing path")
+            assert peer.recv(1) == b"E"
+            assert destination.read_bytes() == payload and alias.is_symlink()
+        absent = destination.with_name("missing document")
+        peer.sendall(b"partial")
+        peer.shutdown(socket.SHUT_WR)
+        try:
+            save_export(worker, absent, 8)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Export accepted truncated data")
+        assert not absent.exists()
+    reply = {"decision": "isolated", "reason": "catalog_unknown", "event_id": "a" * 32, "exit_code": 0}
+    validate_reply({**reply, "export_size": len(payload)}, True)
+    for invalid in (reply, {**reply, "export_size": True}, {**reply, "export_size": DOCUMENT_LIMIT + 1}):
+        try:
+            validate_reply(invalid, True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Accepted an invalid export result")
 with ExitStack() as stack:
     input_read, input_write = os.pipe()
     output_read, output_write = os.pipe()
