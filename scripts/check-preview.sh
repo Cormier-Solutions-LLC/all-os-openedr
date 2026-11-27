@@ -19,6 +19,7 @@ import re
 import select
 import socket
 import struct
+import tempfile
 import subprocess
 import sys
 import threading
@@ -47,7 +48,7 @@ from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
-from all_os_openedr.removable_copies import TransferTrace, Volume
+from all_os_openedr.removable_copies import PATH_SEPARATOR, TransferLog, TransferTrace, Volume
 from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
@@ -527,7 +528,7 @@ fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 83886
 usb_volume = Volume(Mount(52, "8:2", "/srv/USB volume", "ext4", "/dev/sdb1"), 8388610, "usb-uuid", 102, "media-id")
 transfer = TransferTrace(fixed_volume, usb_volume, "boot", "host")
 copy_line = ("buffered\t100\t10\t1001\t1000\t8388609\t19\t8\t0\t8388610\t28\t7\t4\t64"
-             "\t/srv/fixed/input\t/srv/USB volume/output\n")
+             f"\t/srv/fixed/input{PATH_SEPARATOR}/srv/USB volume/output\n")
 record = transfer.receive(json.dumps({"type": "printf", "data": copy_line}))
 assert record["openedr_event"] == "file.copy_inferred"
 assert record["openedr_copy_direction"] == "to_removable" and record["openedr_copy_bytes"] == 64
@@ -535,7 +536,7 @@ assert record["openedr_copy_removable_uuid"] == "usb-uuid" and record["openedr_d
 assert record["openedr_copy_source_id"] != record["openedr_copy_destination_id"]
 assert record["openedr_copy_source_offset"] == 0 and record["openedr_copy_destination_offset"] == 4
 reverse = ("copy_file_range\t110\t10\t1001\t1000\t8388610\t28\t7\t4\t8388609\t19\t8\t0\t64"
-           "\t/srv/USB volume/output\t/srv/fixed/input\n")
+           f"\t/srv/USB volume/output{PATH_SEPARATOR}/srv/fixed/input\n")
 reverse_record = transfer.parse_transfer(reverse)
 assert reverse_record["openedr_event"] == "file.copy_observed"
 assert reverse_record["openedr_copy_direction"] == "from_removable"
@@ -544,12 +545,42 @@ assert reverse_record["openedr_copy_destination_id"] == record["openedr_copy_sou
 assert transfer.parse_transfer(copy_line.replace("/srv/fixed/input", "/srv/fixed-bypass/input")) is None
 assert transfer.parse_transfer(copy_line.replace("/srv/fixed/input", "/srv/fixed/../unrelated/input")) is None
 assert transfer.parse_transfer(copy_line.replace("8388610", "8388609")) is None
-assert transfer.parse_transfer(copy_line.replace("input", "in\tput")) is None
+unusual = copy_line.replace("input", "in\tput").replace("output", "out\nput\n")
+paths = transfer.receive(json.dumps({"type": "printf", "data": unusual}).encode())
+assert paths["openedr_copy_source_path"] == "/srv/fixed/in\tput"
+assert paths["openedr_copy_destination_path"] == "/srv/USB volume/out\nput\n"
+assert transfer.parse_transfer(copy_line.replace(PATH_SEPARATOR, "\t")) is None
 assert transfer.receive(b'{"type":"lost_events","data":2}')["openedr_gap_reason"] == "copy_trace_kernel_events_lost"
 with patch("all_os_openedr.removable_copies.unique_mount_id", side_effect=[101, 102]):
     assert transfer.active()
 with patch("all_os_openedr.removable_copies.unique_mount_id", side_effect=[101, 103]):
     assert not transfer.active()
+
+with patch("all_os_openedr.removable_copies.MAX_EVENTS_PER_SECOND", 2), \
+        patch.object(TransferLog, "append") as capture:
+    limited = TransferLog(transfer, clock=iter((1, 1, 1, 1, 1, 2)).__next__)
+    for _ in range(4):
+        limited.write(record)
+    limited.write(transfer.gap("copy_trace_mount_changed"))
+    limited.write(record)
+    assert [entry.args[0].get("openedr_gap_reason") for entry in capture.call_args_list] == [
+        None, None, "copy_trace_rate_limit", "copy_trace_mount_changed", None,
+    ]
+
+def append_fixture(data, *, log):
+    with log.open("a", encoding="utf-8") as output:
+        output.write(json.dumps(data, separators=(",", ":")) + "\n")
+
+with tempfile.TemporaryDirectory() as directory:
+    log = Path(directory) / "events.jsonl"
+    with patch("all_os_openedr.removable_copies.LOG_MAX_BYTES", 40), \
+            patch("all_os_openedr.removable_copies.LOG_BACKUPS", 2), \
+            patch("all_os_openedr.removable_copies.append", side_effect=append_fixture):
+        writer = TransferLog(transfer, path=log)
+        for marker in range(12):
+            writer.append({"marker": marker, "fixture": "0123456789"})
+        assert [json.loads(path.read_text())["marker"] for path in sorted(log.parent.iterdir())] == [11, 10, 9]
+        assert all(path.stat().st_size <= 40 for path in log.parent.iterdir())
 approval = {
     "action": "release", "endpoint": "a" * 32, "agent": "001", "lease": "b" * 32,
     "alert": "1750012345.1234", "signer": "incident-operator", "issued_ms": 1750012345000, "seconds": 0,

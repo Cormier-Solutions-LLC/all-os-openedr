@@ -104,7 +104,7 @@ kretfunc:vfs_write
     $source = @read_sample[tid];
     if (retval > 0 && (uint64)retval == $source.4 && args.pos && @out_path[tid] != "") {
         $inode = args.file->f_inode;
-        printf("buffered\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\t%s\n",
+        printf("buffered\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\n//\n%s\n",
             nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
             $source.0, $source.1, $source.2, $source.5,
             $inode->i_sb->s_dev, $inode->i_ino, $inode->i_generation, *args.pos - retval, retval,
@@ -123,7 +123,7 @@ kretfunc:vfs_copy_file_range
     if (retval > 0 && @in_path[tid] != "" && @out_path[tid] != "") {
         $in = args.file_in->f_inode;
         $out = args.file_out->f_inode;
-        printf("copy_file_range\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\t%s\n",
+        printf("copy_file_range\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\n//\n%s\n",
             nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
             $in->i_sb->s_dev, $in->i_ino, $in->i_generation, args.pos_in,
             $out->i_sb->s_dev, $out->i_ino, $out->i_generation, args.pos_out, retval,
@@ -141,7 +141,7 @@ kretfunc:do_splice_direct
     $out = args.out->f_inode;
     if ((uint64)args.in == @send_source[tid] && (uint64)args.out == @send_destination[tid] &&
         $in->i_sb->s_dev != $out->i_sb->s_dev && @in_path[tid] != "" && @out_path[tid] != "") {
-        printf("sendfile\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\t%s\n",
+        printf("sendfile\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\n//\n%s\n",
             nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
             $in->i_sb->s_dev, $in->i_ino, $in->i_generation, *args.ppos - retval,
             $out->i_sb->s_dev, $out->i_ino, $out->i_generation, *args.opos - retval, retval,

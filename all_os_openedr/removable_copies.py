@@ -12,12 +12,13 @@ import stat
 import struct
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .file_provenance import checked
+from .file_provenance import checked, visible_text
 from .ima_audit import append
 from .removable_storage import Mount, device_evidence, mounts_from
 
@@ -25,6 +26,10 @@ from .removable_storage import Mount, device_evidence, mounts_from
 PROGRAM = "/usr/share/all-os-openedr/storage/removable-copies.bt"
 OUTPUT = Path("/var/log/all-os-openedr-removable-copies/events.jsonl")
 MAX_LINE = 8192
+PATH_SEPARATOR = "\n//\n"
+MAX_EVENTS_PER_SECOND = 64
+LOG_MAX_BYTES = 16 * 1024 * 1024
+LOG_BACKUPS = 3
 STATX_MNT_ID_UNIQUE = 0x4000
 AT_NO_AUTOMOUNT = 0x800
 METHODS = {
@@ -47,7 +52,7 @@ class Volume:
             path.startswith(self.mount.point + "/")
             and not path.endswith(" (deleted)")
             and all(part not in ("", ".", "..") for part in path.split("/")[1:])
-            and path.isprintable()
+            and "\0" not in path
         )
 
 
@@ -128,18 +133,20 @@ class TransferTrace:
             return False
 
     def parse_transfer(self, line):
-        fields = line.rstrip("\n").split("\t")
-        if len(fields) != 16 or fields[0] not in METHODS:
+        fields = line.removesuffix("\n").split("\t", 14)
+        if len(fields) != 15 or fields[0] not in METHODS:
             return None
         if any(not field.isascii() or not field.isdecimal() or len(field) > 20 for field in fields[1:14]):
             return None
         stamp, start, pid, uid, source, source_ino, source_gen, source_offset, dest, dest_ino, dest_gen, dest_offset, size = (
             map(int, fields[1:14])
         )
-        source_path, dest_path = fields[14:]
+        # The child JSON-escapes the record. A double slash cannot occur in a
+        # canonical kernel pathname, including names with tabs or newlines.
+        source_path, separator, dest_path = fields[14].partition(PATH_SEPARATOR)
         source_volume, dest_volume = self.volumes.get(source), self.volumes.get(dest)
         if (
-            source_volume is None or dest_volume is None or source == dest
+            not separator or source_volume is None or dest_volume is None or source == dest
             or not source_volume.contains(source_path) or not dest_volume.contains(dest_path)
             or not all(0 < value < 2**63 for value in (stamp, start, source_ino, dest_ino, size))
             or not 0 < pid < 2**31 or uid >= 2**32
@@ -165,7 +172,10 @@ class TransferTrace:
             ("destination", dest_volume, dest_ino, dest_gen, dest_offset, dest_path),
         ):
             prefix = f"openedr_copy_{role}"
-            record[f"{prefix}_path"] = path
+            raw_path = path.encode("utf-8", errors="surrogateescape")
+            record[f"{prefix}_path"] = visible_text(raw_path)
+            if record[f"{prefix}_path"] != path:
+                record[f"{prefix}_path_bytes"] = raw_path.hex()
             record[f"{prefix}_id"] = identity(
                 self.boot_id, volume.filesystem_uuid, volume.unique_mount_id, inode, generation,
             )
@@ -174,7 +184,8 @@ class TransferTrace:
 
     def receive(self, line):
         try:
-            message = json.loads(line)
+            text = line.decode("utf-8", errors="surrogateescape") if isinstance(line, bytes) else line
+            message = json.loads(text)
         except (UnicodeError, ValueError):
             return self.gap("copy_trace_invalid_record")
         if not isinstance(message, dict):
@@ -182,7 +193,10 @@ class TransferTrace:
         if message.get("type") == "lost_events":
             return self.gap("copy_trace_kernel_events_lost")
         if message.get("type") == "printf" and isinstance(message.get("data"), str):
-            return self.parse_transfer(message["data"])
+            try:
+                return self.parse_transfer(message["data"])
+            except UnicodeError:
+                return self.gap("copy_trace_invalid_record")
         return None
 
     def stream(self, stream):
@@ -210,6 +224,48 @@ class TransferTrace:
         yield self.gap("copy_trace_mount_changed")
 
 
+class TransferLog:
+    def __init__(self, trace, path=OUTPUT, clock=time.monotonic):
+        self.trace = trace
+        self.path = path
+        self.clock = clock
+        self.second = -1
+        self.events = 0
+
+    def write(self, event):
+        second = int(self.clock())
+        if second != self.second:
+            self.second = second
+            self.events = 0
+        if self.events < MAX_EVENTS_PER_SECOND:
+            self.events += 1
+            self.append(event)
+        elif event.get("openedr_gap_reason") in {"copy_trace_stopped", "copy_trace_mount_changed"}:
+            self.append(event)
+        elif self.events == MAX_EVENTS_PER_SECOND:
+            self.events += 1
+            self.append(self.trace.gap("copy_trace_rate_limit"))
+
+    def append(self, event):
+        size = len(json.dumps(event, separators=(",", ":"))) + 1
+        try:
+            metadata = self.path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None:
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise OSError("The transfer log must be a regular file with one link")
+            if metadata.st_size + size > LOG_MAX_BYTES:
+                for index in range(LOG_BACKUPS, 0, -1):
+                    source = self.path if index == 1 else self.path.with_name(f"{self.path.name}.{index - 1}")
+                    target = self.path.with_name(f"{self.path.name}.{index}")
+                    try:
+                        source.replace(target)
+                    except FileNotFoundError:
+                        continue
+        append(event, log=self.path)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixed", required=True)
@@ -218,6 +274,7 @@ def main():
     try:
         if platform.system() != "Linux" or platform.machine() != "x86_64":
             raise ValueError("The removable copy tracer requires Linux amd64")
+        import fcntl
         import pyudev
 
         context = pyudev.Context()
@@ -232,13 +289,21 @@ def main():
         metadata = OUTPUT.parent.stat(follow_symlinks=False)
         if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
             raise ValueError("The removable copy tracer requires a root-owned log directory")
-        with subprocess.Popen(command, stdout=subprocess.PIPE, env={**os.environ, "BPFTRACE_MAX_STRLEN": "256"}) as child:
-            try:
-                for record in trace.stream(child.stdout):
-                    append(record, log=OUTPUT)
-            finally:
-                if child.poll() is None:
-                    child.terminate()
+        flag = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+        with os.fdopen(os.open(OUTPUT.with_suffix(".lock"), flag, 0o600), "r+b") as lock:
+            metadata = os.fstat(lock.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077
+                    or metadata.st_nlink != 1):
+                raise OSError("The transfer log requires a private root-owned lock")
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            log = TransferLog(trace)
+            with subprocess.Popen(command, stdout=subprocess.PIPE, env={**os.environ, "BPFTRACE_MAX_STRLEN": "256"}) as child:
+                try:
+                    for record in trace.stream(child.stdout):
+                        log.write(record)
+                finally:
+                    if child.poll() is None:
+                        child.terminate()
         return 1
     except (ImportError, OSError, ValueError) as error:
         print(f"all-os-openedr-removable-copies: {error}", file=sys.stderr)
