@@ -5,12 +5,17 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
-sh "$root/packaging/rpm/build.sh" 0.2.0-nightly.1 "$work"
-sh "$root/packaging/rpm/build.sh" 0.2.0 "$work"
-dnf -y install "$work"/all-os-openedr-0.2.0-nightly.1.*.rpm
-test "$(rpm -q --queryformat '%{VERSION}' all-os-openedr)" = '0.2.0~nightly.1'
-dnf -y upgrade "$work"/all-os-openedr-0.2.0.*.rpm
-test "$(rpm -q --queryformat '%{VERSION} %{ARCH}' all-os-openedr)" = '0.2.0 noarch'
+for version in 0.2.0-nightly.20260101.gffffffffffff 0.2.0-nightly.20260101.r.9.gffffffffffff \
+    0.2.0-nightly.20260101.r.10.g000000000000 0.2.0; do
+    sh "$root/packaging/rpm/build.sh" "$version" "$work"
+    expected=$(printf '%s' "$version" | sed 's/-/~/')
+    if rpm -q all-os-openedr >/dev/null 2>&1; then
+        dnf -y upgrade "$work"/all-os-openedr-"$version".*.rpm
+    else
+        dnf -y install "$work"/all-os-openedr-"$version".*.rpm
+    fi
+    test "$(rpm -q --queryformat '%{VERSION} %{ARCH}' all-os-openedr)" = "$expected noarch"
+done
 cd /usr/lib/all-os-openedr
 python=$(sed -n 's/^ExecStart=\([^ ]*\) .*/\1/p' /usr/lib/systemd/system/all-os-openedr.service)
 "$python" -B -m all_os_openedr --once --output "$work/events.jsonl"

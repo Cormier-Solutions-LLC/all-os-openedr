@@ -6,17 +6,22 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 chown openedr-builder "$work"
-nightly=0.0.1-nightly.20260101.g000000000001
 name=all-os-openedr
-for version in "$nightly" 0.0.1; do
+previous=
+for version in 0.0.1-nightly.20260101.gffffffffffff 0.0.1-nightly.20260101.r.9.gffffffffffff \
+    0.0.1-nightly.20260101.r.10.g000000000000 0.0.1; do
     runuser -u openedr-builder -- sh "$root/packaging/arch/build.sh" "$version" "$work"
+    package="$work/$name-$version-1-any.pkg.tar.zst"
+    metadata="$(pacman -Qp "$package")"
+    test "$metadata" = "$name $(printf '%s' "$version" | tr -d '-')-1"
+    installed=${metadata#* }
+    if [ -n "$previous" ]; then
+        test "$(vercmp "$previous" "$installed")" = -1
+    fi
+    pacman -U --noconfirm "$package"
+    test "$(pacman -Q "$name")" = "$metadata"
+    previous=$installed
 done
-
-test "$(vercmp 0.0.1nightly.20260101.g000000000001-1 0.0.1-1)" = -1
-pacman -U --noconfirm "$work/$name-$nightly-1-any.pkg.tar.zst"
-test "$(pacman -Q "$name")" = "$name 0.0.1nightly.20260101.g000000000001-1"
-pacman -U --noconfirm "$work/$name-0.0.1-1-any.pkg.tar.zst"
-test "$(pacman -Q "$name")" = "$name 0.0.1-1"
 
 test "$(systemctl --root=/ is-enabled "$name.service" || true)" = disabled
 systemd-analyze verify "/usr/lib/systemd/system/$name.service"

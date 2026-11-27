@@ -1,6 +1,6 @@
 pkgname=all-os-openedr
 pkgver=${OPENEDR_APK_VERSION:?Run packaging/alpine/build.sh}
-pkgrel=0
+pkgrel=${OPENEDR_APK_REVISION:?Run packaging/alpine/build.sh}
 pkgdesc="OpenEDR process telemetry preview for Linux"
 url="https://github.com/Cormier-Solutions-LLC/all-os-openedr"
 arch="noarch"
