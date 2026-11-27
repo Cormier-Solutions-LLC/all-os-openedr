@@ -23,17 +23,32 @@ class Mount:
     number: str
     point: str
     filesystem: str
+    source: str
+
+
+@dataclass
+class Attachment:
+    evidence: dict
+    paths: set
+
+
+def mount_text(field):
+    return visible_text(MOUNT_ESCAPE.sub(lambda match: bytes((int(match[1], 8),)), field))
 
 
 def mounts_from(lines):
     for line in lines:
         left, separator, right = line.partition(b" - ")
-        fields, filesystem = left.split(), right.split(None, 1)
-        if (not separator or len(fields) < 6 or not filesystem
+        fields, filesystem = left.split(), right.split(None, 2)
+        if (not separator or len(fields) < 6 or len(filesystem) != 3
                 or not fields[0].isdigit() or not BLOCK_NUMBER.fullmatch(fields[2])):
             continue
-        point = MOUNT_ESCAPE.sub(lambda match: bytes((int(match[1], 8),)), fields[4])
-        yield Mount(int(fields[0]), fields[2].decode("ascii"), visible_text(point), visible_text(filesystem[0]))
+        yield Mount(int(fields[0]), fields[2].decode("ascii"), mount_text(fields[4]),
+                    visible_text(filesystem[0]), mount_text(filesystem[1]))
+
+
+def device_paths(device):
+    return {path for path in (device.device_node, *device.device_links) if path and path.startswith("/dev/")}
 
 
 def property_text(device, key):
@@ -101,44 +116,58 @@ class RemovableStorage:
         details["openedr_device_attachment"] = attachment
         details.setdefault("openedr_device_id", attachment)
         details.setdefault("openedr_device_identity_scope", "attachment")
-        self.devices[device.sys_path] = details
+        self.devices[device.sys_path] = Attachment(details, device_paths(device))
         return [self.event(kind, details)]
 
     def update(self, device):
         if device.action == "add":
             return self.add(device, "device.attached")
         if device.action == "remove":
-            details = self.devices.pop(device.sys_path, None)
-            return [self.event("device.removed", details)] if details is not None else []
+            attachment = self.devices.pop(device.sys_path, None)
+            return [self.event("device.removed", attachment.evidence)] if attachment is not None else []
         if device.action == "change" and device.sys_path in self.devices:
+            attachment = self.devices[device.sys_path]
+            attachment.paths = device_paths(device)
             filesystem = property_text(device, "ID_FS_UUID")
             if filesystem:
-                self.devices[device.sys_path]["openedr_device_filesystem_uuid"] = filesystem
+                attachment.evidence["openedr_device_filesystem_uuid"] = filesystem
         return []
 
     def mount_event(self, kind, mount, details):
         return self.event(kind, {
             **details,
             "openedr_device_mount_id": mount.mount_id,
+            "openedr_device_mount_number": mount.number,
             "openedr_device_mountpoint": mount.point,
             "openedr_device_filesystem": mount.filesystem,
         })
 
     def scan_mounts(self, lines, *, initial=False):
-        devices = {details["openedr_device_number"]: details for details in self.devices.values()}
-        visible = {mount.mount_id: mount for mount in mounts_from(lines)
-                   if mount.number in devices or mount.mount_id in self.mounts}
+        devices = {item.evidence["openedr_device_number"]: item.evidence for item in self.devices.values()}
+        paths = {}
+        for item in self.devices.values():
+            for path in item.paths:
+                paths.setdefault(path, []).append(item.evidence)
+        visible = {mount.mount_id: mount for mount in mounts_from(lines)}
         events = []
         for mount_id, (mount, details) in list(self.mounts.items()):
             if visible.get(mount_id) != mount:
                 events.append(self.mount_event("device.unmounted", mount, details))
                 del self.mounts[mount_id]
         for mount_id, mount in visible.items():
-            if mount_id not in self.mounts and mount.number in devices:
-                details = devices[mount.number].copy()
-                self.mounts[mount_id] = (mount, details)
-                kind = "device.mount_present" if initial else "device.mounted"
-                events.append(self.mount_event(kind, mount, details))
+            if mount_id in self.mounts:
+                continue
+            details = devices.get(mount.number)
+            if details is None and mount.filesystem == "btrfs" and mount.number.startswith("0:"):
+                # Btrfs can report an anonymous mount number and name its backing device as the source.
+                candidates = paths.get(mount.source, ())
+                if len(candidates) == 1:
+                    details = candidates[0]
+            if details is None:
+                continue
+            self.mounts[mount_id] = (mount, details.copy())
+            kind = "device.mount_present" if initial else "device.mounted"
+            events.append(self.mount_event(kind, mount, details))
         return events
 
     def stream(self):

@@ -82,6 +82,7 @@
             "openedr_device_node": {"type": "keyword"},
             "openedr_device_filesystem_uuid": {"type": "keyword"},
             "openedr_device_mount_id": {"type": "long"},
+            "openedr_device_mount_number": {"type": "keyword"},
             "openedr_device_mountpoint": {"type": "keyword", "ignore_above": 4096},
             "openedr_device_filesystem": {"type": "keyword"},
             "openedr_file_mask": {"type": "long"},

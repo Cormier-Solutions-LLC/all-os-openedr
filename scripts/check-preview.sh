@@ -462,10 +462,11 @@ assert policy_receipt["openedr_policy_revision"] == 7 and policy_receipt["opened
 
 usb_disk = SimpleNamespace(device_type="disk", device_number=os.makedev(8, 0), sys_path="/sys/usb1/sda", sys_name="sda",
                            properties={"ID_BUS": "usb", "ID_SERIAL": "vendor_fixture", "ID_SERIAL_SHORT": "fixture"},
-                           find_parent=lambda *_: None, attributes={})
+                           find_parent=lambda *_: None, attributes={}, device_node="/dev/sda", device_links=[])
 partition = SimpleNamespace(device_type="partition", device_number=os.makedev(8, 1), sys_path="/sys/usb1/sda/sda1",
                             sys_name="sda1", properties={"ID_FS_UUID": "fixture-volume"},
-                            find_parent=lambda *_: usb_disk, action="add")
+                            find_parent=lambda *_: usb_disk, action="add", device_node="/dev/sda1",
+                            device_links=["/dev/disk/by-uuid/fixture-volume"])
 storage = RemovableStorage()
 present, = storage.add(usb_disk, "device.present")
 attached, = storage.update(partition)
@@ -487,6 +488,12 @@ partition.action = "add"
 reattached, = storage.update(partition)
 assert reattached["openedr_device_id"] == attached["openedr_device_id"]
 assert reattached["openedr_device_attachment"] != attached["openedr_device_attachment"]
+btrfs_line = br"43 1 0:19 /subvolume /srv/btrfs rw - btrfs /dev/disk/by-uuid/fixture-volume rw"
+btrfs_mounted, = storage.scan_mounts([btrfs_line], initial=True)
+assert btrfs_mounted["openedr_event"] == "device.mount_present"
+assert btrfs_mounted["openedr_device_number"] == "8:1" and btrfs_mounted["openedr_device_mount_number"] == "0:19"
+assert btrfs_mounted["openedr_device_attachment"] == reattached["openedr_device_attachment"]
+assert storage.scan_mounts([])[0]["openedr_event"] == "device.unmounted"
 serialless = SimpleNamespace(**{**vars(usb_disk), "sys_path": "/sys/usb2/sdb", "properties": {"ID_BUS": "usb"}})
 fallback, = storage.add(serialless, "device.present")
 assert fallback["openedr_device_identity_scope"] == "attachment"
@@ -1072,6 +1079,7 @@ for key, field_type in (
     ("openedr_device_id", "keyword"),
     ("openedr_device_number", "keyword"),
     ("openedr_device_mount_id", "long"),
+    ("openedr_device_mount_number", "keyword"),
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),
