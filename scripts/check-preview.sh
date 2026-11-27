@@ -563,6 +563,9 @@ assert (transfer.parse_transfer(copy_line.rsplit("\t", 1)[0] + "\t2f 00\n")["ope
         == "copy_trace_path_unavailable")
 long_path = b"/srv/fixed/" + b"nested-directory/" * 20 + b"source"
 assert transfer.parse_transfer(transfer_line(copy_header, long_path, usb_output))["openedr_copy_source_path"] == long_path.decode()
+suffix_path = b"/srv/fixed/linked name (deleted)"
+assert (transfer.parse_transfer(transfer_line(copy_header, suffix_path, usb_output))["openedr_copy_source_path"]
+        == suffix_path.decode())
 assert transfer.receive(b'{"type":"lost_events","data":2}')["openedr_gap_reason"] == "copy_trace_kernel_events_lost"
 with patch("all_os_openedr.removable_copies.unique_mount_id", side_effect=[101, 102]):
     assert transfer.active()

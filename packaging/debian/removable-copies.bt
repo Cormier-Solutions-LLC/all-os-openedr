@@ -58,24 +58,45 @@ kfunc:do_sendfile
 kfunc:security_file_permission
 {
     $file = (uint64)args.file;
-    $path = (struct path *)($file + offsetof(struct file, f_path));
     $range = @range_files[tid];
-    if ($file == @read_file[tid] || $file == $range.0) {
-        @in_path[tid] = path($path, 4096);
-    } else if ($file == @write_file[tid] || $file == $range.1) {
-        @out_path[tid] = path($path, 4096);
-    } else if (@sendfile[tid]) {
+    $source = $file == @read_file[tid] || $file == $range.0;
+    $destination = $file == @write_file[tid] || $file == $range.1;
+    if (!$source && !$destination && @sendfile[tid]) {
         $inode = args.file->f_inode;
         $device = $inode->i_sb->s_dev;
         if (($device == $1 || $device == $2) && ($inode->i_mode & 0xf000) == 0x8000) {
             if (args.mask & 4) {
-                @in_path[tid] = path($path, 4096);
+                $source = (uint64)1;
                 @send_source[tid] = $file;
             } else if (args.mask & 2) {
-                @out_path[tid] = path($path, 4096);
+                $destination = (uint64)1;
                 @send_destination[tid] = $file;
             }
         }
+    }
+    if (!$source && !$destination) {
+        return;
+    }
+    if ($source) {
+        delete(@in_path[tid]);
+    } else {
+        delete(@out_path[tid]);
+    }
+    // Match Linux d_unlinked() checks around path collection. A linked
+    // filename can legitimately include the suffix that d_path appends.
+    $entry = args.file->f_path.dentry;
+    if ((uint64)$entry->d_hash.pprev == 0 && $entry != $entry->d_parent) {
+        return;
+    }
+    $path = (struct path *)($file + offsetof(struct file, f_path));
+    $captured = path($path, 4096);
+    if ((uint64)$entry->d_hash.pprev == 0 && $entry != $entry->d_parent) {
+        return;
+    }
+    if ($source) {
+        @in_path[tid] = $captured;
+    } else {
+        @out_path[tid] = $captured;
     }
 }
 

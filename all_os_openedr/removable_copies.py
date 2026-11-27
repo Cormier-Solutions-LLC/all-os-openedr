@@ -50,7 +50,6 @@ class Volume:
     def contains(self, path):
         return (
             path.startswith(self.mount.point + "/")
-            and not path.endswith(" (deleted)")
             and all(part not in ("", ".", "..") for part in path.split("/")[1:])
             and "\0" not in path
         )
