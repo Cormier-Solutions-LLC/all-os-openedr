@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Open in All OS OpenEDR Containment
+Exec=/usr/bin/all-os-openedr-run --interactive --download %f
+Terminal=true
+NoDisplay=true
+MimeType=application/x-executable;application/x-pie-executable;application/x-shellscript;

@@ -21,8 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .apparmor_policy import trusted_file
-from .containment import IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_event
-from .executable import file_version
+from .containment import IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_download, launch_event
+from .executable import MAX_EXECUTABLE_SIZE, file_version
 from .sandbox_audit import start_audit_session
 
 
@@ -36,6 +36,7 @@ LAUNCH_TIMEOUT = 30
 OUTPUT_LIMIT = 256 * 1024
 DOCUMENT_LIMIT = 8 * 1024 * 1024
 DOCUMENT_LENGTH = struct.Struct("!I")
+DOWNLOAD_TIMEOUT = 5
 PEER = struct.Struct("=iII")
 IO_READY = {"ready_for_io": True}
 IO_OPTIONS = ("interactive", "document", "export")
@@ -65,15 +66,15 @@ def send_message(connection, message):
     connection.sendall(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
 
 
-def read_document(path):
+def read_local_file(path, limit):
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOCTTY
     with os.fdopen(os.open(path, flags), "rb") as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > DOCUMENT_LIMIT:
-            raise ValueError("Expected a regular document within the size limit")
-        data = stream.read(DOCUMENT_LIMIT + 1)
-    if data is None or len(data) > DOCUMENT_LIMIT:
-        raise ValueError("Document could not be read within the size limit")
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("Expected a regular file within the size limit")
+        data = stream.read(limit + 1)
+    if data is None or len(data) > limit:
+        raise ValueError("File could not be read within the size limit")
     return data
 
 
@@ -81,30 +82,36 @@ def receive_chunks(connection, size, deadline):
     while size:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError("Document transfer expired")
+            raise TimeoutError("File transfer expired")
         connection.settimeout(remaining)
         chunk = connection.recv(min(size, 65536))
         if not chunk:
-            raise ValueError("Incomplete document transfer")
+            raise ValueError("Incomplete file transfer")
         size -= len(chunk)
         yield chunk
 
 
 @contextmanager
-def receive_document(connection):
-    deadline = time.monotonic() + 3
+def receive_snapshot(connection, *, limit, name, timeout):
+    deadline = time.monotonic() + timeout
     header = b"".join(receive_chunks(connection, DOCUMENT_LENGTH.size, deadline))
     size, = DOCUMENT_LENGTH.unpack(header)
-    if size > DOCUMENT_LIMIT:
-        raise ValueError("Document exceeds the size limit")
-    fd = os.memfd_create("openedr-document", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
+    if size > limit:
+        raise ValueError("File exceeds the size limit")
+    fd = os.memfd_create(name, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
     with os.fdopen(fd, "w+b") as snapshot:
         for chunk in receive_chunks(connection, size, deadline):
             snapshot.write(chunk)
         snapshot.flush()
         snapshot.seek(0)
         fcntl.fcntl(fd, fcntl.F_ADD_SEALS, IMMUTABLE_SEALS)
-        yield fd
+        yield snapshot
+
+
+def send_snapshot(connection, data, timeout):
+    connection.settimeout(timeout)
+    connection.sendall(DOCUMENT_LENGTH.pack(len(data)))
+    connection.sendall(data)
 
 
 def read_export(fd):
@@ -161,14 +168,29 @@ def receive_pipes(connection):
             os.close(fd)
 
 
+def valid_uids(uids):
+    return isinstance(uids, list) and all(type(uid) is int and 0 < uid < 0xFFFFFFFF for uid in uids)
+
+
 def parse_policy(value):
-    if (not isinstance(value, dict) or set(value) != {"schema", "filesystem", "uuid", "catalog", "applications"}
+    base = {"schema", "catalog"}
+    staged = {"filesystem", "uuid", "applications"}
+    if (not isinstance(value, dict) or not base <= value.keys() <= base | staged | {"download_uids"}
             or type(value["schema"]) is not int or value["schema"] != 1):
         raise ValueError("Invalid launch policy schema")
-    filesystem, catalog = value["filesystem"], value["catalog"]
-    if any(not isinstance(path, str) or not Path(path).is_absolute() or "\0" in path
-           for path in (filesystem, catalog)):
-        raise ValueError("Launch policy paths must be absolute")
+    catalog = value["catalog"]
+    if not isinstance(catalog, str) or not Path(catalog).is_absolute() or "\0" in catalog:
+        raise ValueError("The catalog path must be absolute")
+    download_uids = value.get("download_uids", [])
+    if not valid_uids(download_uids):
+        raise ValueError("Invalid download caller UIDs")
+    if not staged.intersection(value):
+        return None, None, catalog, {}, download_uids
+    if not staged <= value.keys():
+        raise ValueError("Incomplete staged application policy")
+    filesystem = value["filesystem"]
+    if not isinstance(filesystem, str) or not Path(filesystem).is_absolute() or "\0" in filesystem:
+        raise ValueError("The filesystem path must be absolute")
     if not isinstance(value["uuid"], str):
         raise ValueError("Invalid execution volume UUID")
     volume = uuid.UUID(value["uuid"])
@@ -187,12 +209,12 @@ def parse_policy(value):
         if (not isinstance(program, str) or "\0" in program or not Path(program).parts
                 or Path(program).is_absolute() or ".." in Path(program).parts):
             raise ValueError("Application paths must be relative to the execution volume")
-        if not isinstance(uids, list) or any(type(uid) is not int or not 0 < uid < 0xFFFFFFFF for uid in uids):
+        if not valid_uids(uids):
             raise ValueError("Invalid application caller UIDs")
         if (not isinstance(arguments, list) or len(arguments) > 16
                 or any(not isinstance(arg, str) or "\0" in arg or len(arg.encode("utf-8")) > 256 for arg in arguments)):
             raise ValueError("Invalid application arguments")
-    return filesystem, str(volume), catalog, applications
+    return filesystem, str(volume), catalog, applications, download_uids
 
 
 def read_policy():
@@ -227,23 +249,30 @@ def service(connection):
     except (OSError, ValueError, RecursionError):
         block("invalid_request")
         return
-    if (not isinstance(request, dict) or not {"application"} <= request.keys() <= {"application", *IO_OPTIONS}
-            or not isinstance(request["application"], str) or not APPLICATION.fullmatch(request["application"])
-            or any(request.get(key, True) is not True for key in IO_OPTIONS)):
+    if not isinstance(request, dict):
+        block("invalid_request")
+        return
+    download = "download" in request
+    name = request.get("application")
+    if download:
+        valid = request.keys() <= {"download", "interactive"} and request["download"] is True
+    else:
+        valid = (request.keys() <= {"application", *IO_OPTIONS} and isinstance(name, str)
+                 and APPLICATION.fullmatch(name))
+    if not valid or any(request.get(key, True) is not True for key in IO_OPTIONS):
         block("invalid_request")
         return
     try:
-        filesystem, volume, catalog, applications = read_policy()
+        filesystem, volume, catalog, applications, download_uids = read_policy()
     except (OSError, ValueError, RuntimeError):
         block("launch_policy_unavailable")
         return
-    name = request["application"]
-    app = applications.get(name)
+    app = {"uids": download_uids, "interactive": True, "arguments": ()} if download else applications.get(name)
     if app is None or uid == os.getuid() or uid not in app["uids"]:
         block("request_not_authorized")
         return
-    event["openedr_containment_application"] = name
-    requested = request.keys() - {"application"}
+    event["openedr_containment_application"] = "downloaded file" if download else name
+    requested = request.keys() - {"application", "download"}
     for key in IO_OPTIONS:
         if key in requested and not app.get(key, False):
             block(f"{key}_not_allowed")
@@ -252,14 +281,14 @@ def service(connection):
         session_id = start_audit_session(os.getuid())
         if session_id is not None:
             event["openedr_containment_audit_session"] = session_id
-    options = SimpleNamespace(
-        catalog=catalog, execution_volume=(filesystem, volume), program=Path(filesystem) / app["program"],
-        arguments=app["arguments"], timeout=LAUNCH_TIMEOUT,
-    )
+    options = SimpleNamespace(catalog=catalog, arguments=app["arguments"], timeout=LAUNCH_TIMEOUT)
+    if not download:
+        options.execution_volume = filesystem, volume
+        options.program = Path(filesystem) / app["program"]
     exported = None
     with ExitStack() as stack:
         launch_io = {}
-        if requested:
+        if download or requested:
             send_message(connection, IO_READY)
 
             # EOF or additional control data ends the session. Input EOF arrives on the pipe.
@@ -267,9 +296,20 @@ def service(connection):
                 return bool(select.select([connection], [], [], 0)[0])
 
             launch_io["cancelled"] = cancelled
+        if download:
+            try:
+                snapshot = stack.enter_context(receive_snapshot(
+                    connection, limit=MAX_EXECUTABLE_SIZE, name="openedr-download", timeout=DOWNLOAD_TIMEOUT,
+                ))
+            except (OSError, ValueError):
+                block("invalid_download")
+                return
         if "document" in requested:
             try:
-                launch_io["document"] = stack.enter_context(receive_document(connection))
+                document = stack.enter_context(receive_snapshot(
+                    connection, limit=DOCUMENT_LIMIT, name="openedr-document", timeout=3,
+                ))
+                launch_io["document"] = document.fileno()
             except (OSError, ValueError):
                 block("invalid_document")
                 return
@@ -288,7 +328,10 @@ def service(connection):
                 return
             launch_io["export"] = target.name
         try:
-            code = launch(options, event, delegated=True, reporter=report, **launch_io)
+            if download:
+                code = launch_download(snapshot, options, event, reporter=report, **launch_io)
+            else:
+                code = launch(options, event, delegated=True, reporter=report, **launch_io)
         except (OSError, ValueError, RuntimeError):
             block("launch_failed")
             return
@@ -382,25 +425,37 @@ def validate_reply(reply, export_requested):
 
 def client_main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("application", help="application name from the administrator's launch policy")
+    parser.add_argument("application", nargs="?", help="application name from the administrator's launch policy")
+    parser.add_argument("--download", type=Path, help="run a selected local executable in containment")
     parser.add_argument("--interactive", action="store_true", help="connect standard input and plain-text output")
     parser.add_argument("--document", type=Path, help="provide a read-only copy of a selected local file")
     parser.add_argument("--export", type=Path, help="save a successful export as a new local file")
     options = parser.parse_args()
-    if not APPLICATION.fullmatch(options.application):
+    if (options.application is None) == (options.download is None):
+        parser.error("Choose an enrolled application or use --download FILE")
+    if options.download is not None and (options.document is not None or options.export is not None):
+        parser.error("Document and export options require an enrolled application")
+    if options.application is not None and not APPLICATION.fullmatch(options.application):
         parser.error("Use a lowercase application name with letters, digits, and hyphens")
     try:
         document = None
+        download = None
+        if options.download is not None:
+            try:
+                download = read_local_file(options.download, MAX_EXECUTABLE_SIZE)
+            except (OSError, ValueError):
+                print("Could not read a regular program up to 32 MiB", file=sys.stderr)
+                return LAUNCH_FAILED
         if options.document is not None:
             try:
-                document = read_document(options.document)
+                document = read_local_file(options.document, DOCUMENT_LIMIT)
             except (OSError, ValueError):
                 print("Could not read a regular document up to 8 MiB", file=sys.stderr)
                 return LAUNCH_FAILED
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(3)
             connection.connect(SOCKET_PATH)
-            request = {"application": options.application}
+            request = {"download": True} if download is not None else {"application": options.application}
             if options.interactive:
                 request["interactive"] = True
             if document is not None:
@@ -409,11 +464,11 @@ def client_main():
                 request["export"] = True
             send_message(connection, request)
             reply = receive_message(connection, LAUNCH_TIMEOUT + 10)
-            if len(request) > 1 and reply == IO_READY:
+            if (download is not None or len(request) > 1) and reply == IO_READY:
+                if download is not None:
+                    send_snapshot(connection, download, DOWNLOAD_TIMEOUT)
                 if document is not None:
-                    connection.settimeout(3)
-                    connection.sendall(DOCUMENT_LENGTH.pack(len(document)))
-                    connection.sendall(document)
+                    send_snapshot(connection, document, 3)
                 if options.interactive and not exchange_pipes(connection):
                     print("Contained application exceeded the 256 KiB output limit", file=sys.stderr)
                     return LAUNCH_FAILED

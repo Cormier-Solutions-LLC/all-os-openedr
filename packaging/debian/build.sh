@@ -18,7 +18,7 @@ trap 'rm -rf -- "$stage"' EXIT
 install -d "$stage/DEBIAN" "$stage/usr/lib/all-os-openedr/all_os_openedr" \
     "$stage/usr/lib/systemd/system" "$stage/usr/share/doc/all-os-openedr" \
     "$stage/usr/bin" "$stage/usr/share/all-os-openedr/wazuh" "$stage/usr/share/all-os-openedr/samba" \
-    "$stage/usr/share/all-os-openedr/containment"
+    "$stage/usr/share/all-os-openedr/containment" "$stage/usr/share/applications"
 cat > "$stage/DEBIAN/control" <<EOF
 Package: all-os-openedr
 Version: $package_version
@@ -41,6 +41,7 @@ install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
     "$root/packaging/debian/all-os-openedr-response" \
     "$root/packaging/debian/all-os-openedr-samba-policy" "$stage/usr/bin/"
 install -m 0750 "$root/integrations/wazuh/all-os-openedr-response" "$stage/usr/share/all-os-openedr/wazuh/"
+install -m 0644 "$root/packaging/debian/all-os-openedr-contain-download.desktop" "$stage/usr/share/applications/"
 install -m 0755 "$root/packaging/debian/all-os-openedr-ima-audit" \
     "$root/packaging/debian/all-os-openedr-containment-audit" \
     "$root/packaging/debian/all-os-openedr-launch-broker" "$stage/usr/lib/all-os-openedr/"
