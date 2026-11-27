@@ -232,7 +232,7 @@ On Debian 13 amd64 with kernel Audit, BTF, and syscall tracepoints, install `bpf
 Environment=OPENEDR_CONTAINMENT_AUDIT=1
 ```
 
-The delegated broker starts a fresh kernel Audit session under its dedicated account. The collector observes selected file opens and socket creation after the sandboxed program starts. It scopes capture to that Audit session and the sandbox mount namespace. The Audit session identifies the managed launch, and the launch record preserves the authenticated requester UID. This works alongside the existing sandbox and seccomp filter. If a kernel security setting prevents tracing or Audit session creation, the launch policy still runs. [Debian bpftrace reference](https://manpages.debian.org/trixie/bpftrace/bpftrace.8.en.html)
+The delegated broker starts a fresh kernel Audit session under its dedicated account. The collector observes selected native amd64 file opens and socket creation after the sandboxed program starts. It scopes capture to that Audit session and the sandbox mount namespace. The Audit session identifies the managed launch, and the launch record preserves the authenticated requester UID. This works alongside the existing sandbox and seccomp filter. If a kernel security setting prevents tracing or Audit session creation, the launch policy still runs. [Debian bpftrace reference](https://manpages.debian.org/trixie/bpftrace/bpftrace.8.en.html)
 
 Merge the packaged `containment-audit-localfile.xml` into the same Wazuh agent configuration as the launch log. Reserve Wazuh rule 110124. Configure retention for the local audit output and index these fields with template version 13 or add the new properties from that template to the current write index.
 

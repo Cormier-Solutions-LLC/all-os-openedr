@@ -20,8 +20,12 @@ rawtracepoint:sys_exit
 /uid == $1 && @mount_namespace[curtask->sessionid] &&
  @mount_namespace[curtask->sessionid] == curtask->nsproxy->mnt_ns->ns.inum/
 {
+  // TS_COMPAT marks an IA32 syscall running on a 64-bit kernel.
+  if (curtask->thread_info.status & 0x0002) {
+    return;
+  }
   // Linux amd64 syscall numbers. Keep the whitelist aligned with sandbox_audit.py.
-  $operation = ((struct pt_regs *)arg0)->orig_ax;
+  $operation = (int32)((struct pt_regs *)arg0)->orig_ax;
   if ($operation != 2 && $operation != 41 && $operation != 85 &&
       $operation != 257 && $operation != 437) {
     return;
