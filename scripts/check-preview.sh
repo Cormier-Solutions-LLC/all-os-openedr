@@ -607,7 +607,7 @@ assert dns_trace.receive(b'{"type":"lost_events","data":3}')["openedr_gap_reason
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110137']/field"), query["openedr_event"])
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110138']/field"), gap["openedr_event"])
 http = HTTPRequests()
-assert list(http.feed(0, b"GET http://user:secret@example.test/a;token=secret")) == []
+assert list(http.feed(0, b"GET HtTp://user:secret@example.test/a;token=secret")) == []
 headers = b"?token=secret HTTP/1.1\r\nAuthorization: Basic secret\r\n\r\n"
 request, = http.feed(0, headers)
 assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",

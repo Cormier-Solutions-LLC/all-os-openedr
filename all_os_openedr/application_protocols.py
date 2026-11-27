@@ -41,14 +41,14 @@ def request_target(raw, host):
         return None
     if target.startswith("/"):
         path = target.split("?", 1)[0].split("#", 1)[0]
-    elif target.startswith("http://"):
+    else:
         parts = urlsplit(target)
+        if parts.scheme.lower() != "http" or not parts.netloc:
+            return None
         # An absolute request may carry userinfo. Retain only the host and path.
         server = parts.netloc.rsplit("@", 1)[-1]
         host = authority(server.encode("ascii"))
         path = parts.path or "/"
-    else:
-        return None
     path = "/".join(segment.split(";", 1)[0] for segment in path.split("/"))
     if not path or len(path) > PATH_LIMIT:
         return None
