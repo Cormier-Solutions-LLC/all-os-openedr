@@ -46,9 +46,15 @@ def select_filesystem(path):
     return root, metadata.st_dev, identity
 
 
-def policy_rules(identity):
+def policy_rules(identity, launcher_uid=None):
+    if launcher_uid is not None and not 0 < launcher_uid < 0xFFFFFFFF:
+        raise ValueError("Choose a non-root launcher UID between 1 and 4294967294")
     yield f"appraise func=BPRM_CHECK fsuuid={identity}"
     yield f"appraise func=MMAP_CHECK mask=MAY_EXEC fsuuid={identity}"
+    if launcher_uid is not None:
+        read_rule = f"func=FILE_CHECK mask=^MAY_READ fsuuid={identity}"
+        yield f"dont_appraise {read_rule} uid={launcher_uid}"
+        yield f"appraise {read_rule} uid>0"
 
 
 @contextmanager
@@ -106,6 +112,9 @@ def main():
     for name in ("policy", "approve", "revoke"):
         command = commands.add_parser(name)
         command.add_argument("--filesystem", required=True, metavar="MOUNT_ROOT")
+        if name == "policy":
+            command.add_argument("--launcher-uid", type=int, metavar="UID",
+                                 help="appraise non-root file reads except for this dedicated containment service UID")
         if name in ("approve", "revoke"):
             command.add_argument("file")
         if name == "approve":
@@ -116,7 +125,7 @@ def main():
     try:
         root, device, identity = select_filesystem(options.filesystem)
         if options.command == "policy":
-            print(*policy_rules(identity), sep="\n")
+            print(*policy_rules(identity, options.launcher_uid), sep="\n")
             return 0
         with open_candidate(root, device, options.file) as (fd, metadata):
             if options.command == "approve":

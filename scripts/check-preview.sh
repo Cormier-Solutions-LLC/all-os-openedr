@@ -69,6 +69,19 @@ with TemporaryDirectory() as temporary:
         f"appraise func=BPRM_CHECK fsuuid={execution_uuid}",
         f"appraise func=MMAP_CHECK mask=MAY_EXEC fsuuid={execution_uuid}",
     ]
+    rules = list(policy_rules(execution_uuid, 999))
+    assert rules[:2] == list(policy_rules(execution_uuid))
+    assert rules[2:] == [
+        f"dont_appraise func=FILE_CHECK mask=^MAY_READ fsuuid={execution_uuid} uid=999",
+        f"appraise func=FILE_CHECK mask=^MAY_READ fsuuid={execution_uuid} uid>0",
+    ]
+    for invalid in (-1, 0, 4294967295):
+        try:
+            list(policy_rules(execution_uuid, invalid))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("IMA read policy accepted an invalid launcher UID")
     try:
         select_filesystem("/")
     except ValueError:
