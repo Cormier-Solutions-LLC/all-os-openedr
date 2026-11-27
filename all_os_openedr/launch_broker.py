@@ -177,7 +177,7 @@ def valid_uids(uids):
 def parse_policy(value):
     base = {"schema", "catalog"}
     staged = {"filesystem", "uuid", "applications"}
-    download_settings = {"download_uids", "download_libraries"}
+    download_settings = {"download_uids", "download_libraries", "download_python"}
     if (not isinstance(value, dict) or not base <= value.keys() <= base | staged | download_settings
             or type(value["schema"]) is not int or value["schema"] != 1):
         raise ValueError("Invalid launch policy schema")
@@ -190,8 +190,15 @@ def parse_policy(value):
     download_libraries = value.get("download_libraries", [])
     if not valid_runtime_libraries(download_libraries):
         raise ValueError("Invalid download runtime libraries")
+    download_python = value.get("download_python", False)
+    if type(download_python) is not bool:
+        raise ValueError("Invalid download Python permission")
+    download_app = {
+        "uids": download_uids, "interactive": True, "arguments": (),
+        "libraries": download_libraries, "python": download_python,
+    }
     if not staged.intersection(value):
-        return None, None, catalog, {}, download_uids, download_libraries
+        return None, None, catalog, {}, download_app
     if not staged <= value.keys():
         raise ValueError("Incomplete staged application policy")
     filesystem = value["filesystem"]
@@ -208,8 +215,8 @@ def parse_policy(value):
     required = {"program", "uids", "arguments"}
     for name, app in applications.items():
         if (not APPLICATION.fullmatch(name) or not isinstance(app, dict)
-                or not required <= app.keys() <= required.union(IO_OPTIONS, {"libraries"})
-                or any(type(app.get(key, False)) is not bool for key in IO_OPTIONS)):
+                or not required <= app.keys() <= required.union(IO_OPTIONS, {"libraries", "python"})
+                or any(type(app.get(key, False)) is not bool for key in (*IO_OPTIONS, "python"))):
             raise ValueError("Invalid application policy")
         if not valid_runtime_libraries(app.get("libraries", [])):
             raise ValueError("Invalid application runtime libraries")
@@ -222,7 +229,7 @@ def parse_policy(value):
         if (not isinstance(arguments, list) or len(arguments) > 16
                 or any(not isinstance(arg, str) or "\0" in arg or len(arg.encode("utf-8")) > 256 for arg in arguments)):
             raise ValueError("Invalid application arguments")
-    return filesystem, str(volume), catalog, applications, download_uids, download_libraries
+    return filesystem, str(volume), catalog, applications, download_app
 
 
 def read_policy():
@@ -271,13 +278,11 @@ def service(connection):
         block("invalid_request")
         return
     try:
-        filesystem, volume, catalog, applications, download_uids, download_libraries = read_policy()
+        filesystem, volume, catalog, applications, download_app = read_policy()
     except (OSError, ValueError, RuntimeError):
         block("launch_policy_unavailable")
         return
-    app = ({
-        "uids": download_uids, "interactive": True, "arguments": (), "libraries": download_libraries,
-    } if download else applications.get(name))
+    app = download_app if download else applications.get(name)
     if app is None or uid == os.getuid() or uid not in app["uids"]:
         block("request_not_authorized")
         return
@@ -291,7 +296,9 @@ def service(connection):
         session_id = start_audit_session(os.getuid())
         if session_id is not None:
             event["openedr_containment_audit_session"] = session_id
-    options = SimpleNamespace(catalog=catalog, arguments=app["arguments"], timeout=LAUNCH_TIMEOUT)
+    options = SimpleNamespace(
+        catalog=catalog, arguments=app["arguments"], timeout=LAUNCH_TIMEOUT, allow_python=app.get("python", False),
+    )
     if not download:
         options.execution_volume = filesystem, volume
         options.program = Path(filesystem) / app["program"]
