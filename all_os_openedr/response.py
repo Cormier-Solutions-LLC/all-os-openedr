@@ -1,4 +1,4 @@
-"""Authorize Linux network isolation and managed executable quarantine."""
+"""Authorize Linux network, executable, and managed process responses."""
 
 import argparse
 import base64
@@ -10,6 +10,8 @@ import json
 import os
 import pwd
 import re
+import select
+import signal
 import socket
 import stat
 import subprocess
@@ -23,6 +25,7 @@ from pathlib import Path, PurePosixPath
 
 from .apparmor_policy import trusted_file
 from .executable import SHA256, file_version, inspect_descriptor
+from .file_provenance import actor_snapshot
 from .ima_policy import open_candidate, select_filesystem
 
 
@@ -42,9 +45,14 @@ ENDPOINT = re.compile(r"[0-9a-f]{32}")
 AGENT = re.compile(r"(?!0+$)[0-9]{3,8}")
 ALERT_ID = re.compile(r"[0-9]{1,20}\.[0-9]{1,20}")
 VOLUME_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+UNIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service")
 QUARANTINE = ".openedr-quarantine"
 FILE_ACTIONS = ("quarantine", "restore")
+PROCESS_FIELDS = ("pid", "uid", "boot_id", "actor_id", "unit")
+RESPONSE_ACTIONS = ("isolate", "release", *FILE_ACTIONS, "terminate")
 RENAME_NOREPLACE = 1
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+CGROUP_ROOT = Path("/sys/fs/cgroup")
 
 
 def require(condition, reason):
@@ -85,7 +93,7 @@ def load_config(*, check_enrollment=True):
             "unsafe_configuration_directory")
     config = json.loads(restricted_file(CONFIG))
     required = {"endpoint", "agent", "manager"}
-    require(isinstance(config, dict) and required <= config.keys() <= required | {"quarantine"},
+    require(isinstance(config, dict) and required <= config.keys() <= required | {"quarantine", "process_targets"},
             "invalid_endpoint_config")
     require(matches(ENDPOINT, config["endpoint"]) and matches(AGENT, config["agent"]),
             "invalid_endpoint_config")
@@ -102,7 +110,7 @@ def load_config(*, check_enrollment=True):
             "invalid_manager_address")
     port = manager["port"]
     require(type(port) is int and 1 <= port <= 65535, "invalid_manager_port")
-    return config["endpoint"], config["agent"], address, port, config.get("quarantine")
+    return config["endpoint"], config["agent"], address, port, config
 
 
 def valid_quarantine_path(value):
@@ -122,9 +130,11 @@ def decode_token(token):
     required = ("action", "endpoint", "agent", "alert", "signer", "lease", "issued_ms", "seconds")
     require(isinstance(request, dict), "invalid_approval_fields")
     action = request.get("action")
-    require(action in ("isolate", "release", *FILE_ACTIONS), "invalid_action")
+    require(action in RESPONSE_ACTIONS, "invalid_action")
     if action in FILE_ACTIONS:
         required += ("volume", "path", "sha256")
+    elif action == "terminate":
+        required += PROCESS_FIELDS
     fields(request, required, "invalid_approval_fields")
     for key, pattern in (("endpoint", ENDPOINT), ("agent", AGENT), ("alert", ALERT_ID),
                          ("signer", IDENTITY), ("lease", ENDPOINT)):
@@ -132,6 +142,11 @@ def decode_token(token):
     if action in FILE_ACTIONS:
         require(matches(VOLUME_ID, request["volume"]) and matches(SHA256, request["sha256"])
                 and valid_quarantine_path(request["path"]), "invalid_quarantine_target")
+    elif action == "terminate":
+        require(type(request["pid"]) is int and 1 < request["pid"] < 1 << 31
+                and type(request["uid"]) is int and 0 < request["uid"] < 0xFFFFFFFF
+                and matches(VOLUME_ID, request["boot_id"]) and matches(SHA256, request["actor_id"])
+                and matches(UNIT_NAME, request["unit"]), "invalid_process_target")
     seconds = request["seconds"]
     require(type(seconds) is int and
             (1 <= seconds <= MAX_DURATION if action == "isolate" else seconds == 0),
@@ -210,10 +225,16 @@ def isolation_rules(lease, address, port, milliseconds, replace):
 
 def audit(result, request=None, reason=None):
     file_action = request and request.get("action") in FILE_ACTIONS
+    process_action = request and request.get("action") == "terminate"
+    event_name = "response.network_isolation"
+    if file_action:
+        event_name = "response.file_quarantine"
+    elif process_action:
+        event_name = "response.process_termination"
     event = {
         "openedr_source": "all-os-openedr",
         "openedr_schema": 1,
-        "openedr_event": "response.file_quarantine" if file_action else "response.network_isolation",
+        "openedr_event": event_name,
         "openedr_event_id": uuid.uuid4().hex,
         "openedr_host": socket.gethostname(),
         "openedr_observed_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
@@ -225,6 +246,8 @@ def audit(result, request=None, reason=None):
         if file_action and "sha256" in request:
             event["openedr_response_file_sha256"] = request["sha256"]
             event["openedr_response_volume_uuid"] = request["volume"]
+        if process_action:
+            event.update({f"openedr_response_process_{key}": request[key] for key in PROCESS_FIELDS})
         duration = request.get("seconds", 0)
         if duration:
             event["openedr_response_deadline_ms"] = request["issued_ms"] + duration * 1000
@@ -382,6 +405,47 @@ def apply_file_response(request, config, *, local=False):
     audit("restored" if restore else "quarantined", request, reason)
 
 
+def verify_process_scope(request, pidfd, cgroup):
+    pid = request["pid"]
+    snapshot = actor_snapshot(pid, pidfd, request["boot_id"])
+    require(snapshot.get("openedr_file_actor_id") == request["actor_id"], "process_identity_mismatch")
+    directory = Path(f"/proc/{pid}")
+    entries = (directory / "status").read_text(encoding="utf-8", errors="replace").splitlines()
+    status = dict(line.split(":", 1) for line in entries if ":" in line)
+    require(status.get("Tgid", "").strip() == str(pid)
+            and status.get("Uid", "").split() == [str(request["uid"])] * 4
+            and status.get("NoNewPrivs", "").strip() == "1"
+            and all(int(status.get(key, "1"), 16) == 0 for key in ("CapEff", "CapPrm", "CapInh", "CapAmb")),
+            "unsafe_process_credentials")
+    require((directory / "cgroup").read_text().splitlines() == [f"0::{cgroup}"], "process_unit_mismatch")
+    trusted_file(CGROUP_ROOT / cgroup.lstrip("/") / "cgroup.procs")
+
+
+def apply_process_response(request, targets):
+    allowed_uid = targets.get(request["unit"]) if isinstance(targets, dict) else None
+    require(type(allowed_uid) is int and allowed_uid == request["uid"], "process_target_not_enrolled")
+    require(BOOT_ID.read_text().strip() == request["boot_id"], "process_boot_mismatch")
+    approval_age(request)
+    cgroup = f"/system.slice/{request['unit']}"
+    try:
+        pidfd = os.pidfd_open(request["pid"])
+    except ProcessLookupError:
+        raise ValueError("process_not_running") from None
+    try:
+        verify_process_scope(request, pidfd, cgroup)
+        approval_age(request)
+        consume_approval(request)
+        audit("authorized", request)
+        verify_process_scope(request, pidfd, cgroup)
+        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        poller = select.poll()
+        poller.register(pidfd, select.POLLIN)
+        confirmed = any(events & select.POLLIN for _, events in poller.poll(5000))
+        audit("terminated" if confirmed else "termination_pending", request)
+    finally:
+        os.close(pidfd)
+
+
 def serve(local_release, local_restore=None):
     request = None
     audit_ready = False
@@ -400,16 +464,18 @@ def serve(local_release, local_restore=None):
                     nft("delete", "table", *TABLE.split())
                 audit("local_release", reason="active_lease_removed" if active else "already_inactive")
                 return 0
-            endpoint, agent, address, port, quarantine_config = load_config(check_enrollment=local_restore is None)
+            endpoint, agent, address, port, config = load_config(check_enrollment=local_restore is None)
             if local_restore is not None:
                 request = {"action": "restore", "lease": local_restore, "agent": agent}
-                apply_file_response(request, quarantine_config, local=True)
+                apply_file_response(request, config.get("quarantine"), local=True)
                 return 0
             require((candidate["endpoint"], candidate["agent"]) == (endpoint, agent), "wrong_endpoint")
             verify(candidate, payload, signature)
             request = candidate
             if request["action"] in FILE_ACTIONS:
-                apply_file_response(request, quarantine_config)
+                apply_file_response(request, config.get("quarantine"))
+            elif request["action"] == "terminate":
+                apply_process_response(request, config.get("process_targets"))
             else:
                 apply(request, address, port)
         return 0
@@ -427,7 +493,7 @@ def serve(local_release, local_restore=None):
 
 def sign(options):
     lease = options.lease
-    if options.action in ("isolate", "quarantine") and lease is None:
+    if options.action in ("isolate", "quarantine", "terminate") and lease is None:
         lease = uuid.uuid4().hex
     request = {
         "action": options.action, "endpoint": options.endpoint, "agent": options.agent,
@@ -438,6 +504,11 @@ def sign(options):
         request.update(volume=options.volume, path=options.path, sha256=options.sha256)
     elif any(value is not None for value in (options.volume, options.path, options.sha256)):
         raise ValueError("File response fields require quarantine or restore")
+    process = {field: getattr(options, field) for field in PROCESS_FIELDS}
+    if options.action == "terminate":
+        request.update(process)
+    elif any(value is not None for value in process.values()):
+        raise ValueError("Process response fields require terminate")
     payload = json.dumps(request, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(payload).decode()
     decode_token(f"v1.{encoded}.")
@@ -446,7 +517,9 @@ def sign(options):
         input=payload, stdout=subprocess.PIPE, check=True,
     ).stdout
     token = f"v1.{encoded}.{base64.urlsafe_b64encode(signature).decode()}"
-    label = "Quarantine ID" if options.action in FILE_ACTIONS else "Lease"
+    label = {"quarantine": "Quarantine ID", "restore": "Quarantine ID", "terminate": "Response ID"}.get(
+        options.action, "Lease",
+    )
     print(f"{label} {lease}", file=sys.stderr)
     print(json.dumps({"command": "!all-os-openedr-response", "arguments": [token]}))
 
@@ -459,7 +532,7 @@ def main():
     local_restore = options.add_parser("local-restore")
     local_restore.add_argument("--lease", required=True, help="quarantine ID printed by the signer")
     signer = options.add_parser("sign")
-    signer.add_argument("action", choices=("isolate", "release", *FILE_ACTIONS))
+    signer.add_argument("action", choices=RESPONSE_ACTIONS)
     signer.add_argument("--endpoint", required=True)
     signer.add_argument("--agent", required=True)
     signer.add_argument("--alert", required=True)
@@ -470,6 +543,11 @@ def main():
     signer.add_argument("--volume", help="managed ext4 volume UUID for a file response")
     signer.add_argument("--path", help="executable path relative to the managed volume")
     signer.add_argument("--sha256", help="expected executable digest")
+    signer.add_argument("--pid", type=int, help="PID recorded in the process actor alert")
+    signer.add_argument("--uid", type=int, help="enrolled non-root service UID")
+    signer.add_argument("--boot-id", help="endpoint boot ID recorded in the alert")
+    signer.add_argument("--actor-id", help="PID-backed actor ID recorded in the alert")
+    signer.add_argument("--unit", help="enrolled systemd service unit in system.slice")
     parsed = parser.parse_args()
     if parsed.operation == "sign":
         try:
