@@ -20,7 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .apparmor_policy import trusted_file
-from .containment import LAUNCH_FAILED, emit, launch, launch_event
+from .containment import IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_event
 from .sandbox_audit import start_audit_session
 
 
@@ -31,6 +31,8 @@ MAX_MESSAGE = 4096
 MAX_POLICY = 65536
 LAUNCH_TIMEOUT = 30
 OUTPUT_LIMIT = 256 * 1024
+DOCUMENT_LIMIT = 8 * 1024 * 1024
+DOCUMENT_LENGTH = struct.Struct("!I")
 PEER = struct.Struct("=iII")
 IO_READY = {"ready_for_io": True}
 
@@ -57,6 +59,50 @@ def receive_message(connection, timeout):
 def send_message(connection, message):
     connection.settimeout(3)
     connection.sendall(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
+
+
+def read_document(path):
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOCTTY
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > DOCUMENT_LIMIT:
+            raise ValueError("Expected a regular document within the size limit")
+        data = stream.read(DOCUMENT_LIMIT + 1)
+    if data is None or len(data) > DOCUMENT_LIMIT:
+        raise ValueError("Document could not be read within the size limit")
+    return data
+
+
+@contextmanager
+def receive_document(connection):
+    deadline = time.monotonic() + 3
+
+    def receive(count):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Document transfer expired")
+        connection.settimeout(remaining)
+        chunk = connection.recv(count)
+        if not chunk:
+            raise ValueError("Incomplete document transfer")
+        return chunk
+
+    header = bytearray()
+    while len(header) < DOCUMENT_LENGTH.size:
+        header.extend(receive(DOCUMENT_LENGTH.size - len(header)))
+    size, = DOCUMENT_LENGTH.unpack(header)
+    if size > DOCUMENT_LIMIT:
+        raise ValueError("Document exceeds the size limit")
+    fd = os.memfd_create("openedr-document", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MEMFD_NOEXEC)
+    with os.fdopen(fd, "w+b") as snapshot:
+        while size:
+            data = receive(min(size, 65536))
+            snapshot.write(data)
+            size -= len(data)
+        snapshot.flush()
+        snapshot.seek(0)
+        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, IMMUTABLE_SEALS)
+        yield fd
 
 
 @contextmanager
@@ -106,8 +152,8 @@ def parse_policy(value):
     required = {"program", "uids", "arguments"}
     for name, app in applications.items():
         if (not APPLICATION.fullmatch(name) or not isinstance(app, dict)
-                or not required <= app.keys() <= required | {"interactive"}
-                or type(app.get("interactive", False)) is not bool):
+                or not required <= app.keys() <= required | {"interactive", "document"}
+                or any(type(app.get(key, False)) is not bool for key in ("interactive", "document"))):
             raise ValueError("Invalid application policy")
         program, uids, arguments = app["program"], app["uids"], app["arguments"]
         if (not isinstance(program, str) or "\0" in program or not Path(program).parts
@@ -153,9 +199,9 @@ def service(connection):
     except (OSError, ValueError, RecursionError):
         block("invalid_request")
         return
-    if (not isinstance(request, dict) or set(request) not in ({"application"}, {"application", "interactive"})
+    if (not isinstance(request, dict) or not {"application"} <= request.keys() <= {"application", "interactive", "document"}
             or not isinstance(request["application"], str) or not APPLICATION.fullmatch(request["application"])
-            or ("interactive" in request and request["interactive"] is not True)):
+            or any(request.get(key, True) is not True for key in ("interactive", "document"))):
         block("invalid_request")
         return
     try:
@@ -170,8 +216,12 @@ def service(connection):
         return
     event["openedr_containment_application"] = name
     interactive = request.get("interactive", False)
+    document = request.get("document", False)
     if interactive and not app.get("interactive", False):
         block("interactive_not_allowed")
+        return
+    if document and not app.get("document", False):
+        block("document_not_allowed")
         return
     if os.environ.get("OPENEDR_CONTAINMENT_AUDIT") == "1":
         session_id = start_audit_session(os.getuid())
@@ -183,19 +233,26 @@ def service(connection):
     )
     with ExitStack() as stack:
         launch_io = {}
-        if interactive:
-            try:
-                send_message(connection, IO_READY)
-                streams = stack.enter_context(receive_pipes(connection))
-            except (OSError, ValueError):
-                block("invalid_interactive_streams")
-                return
+        if interactive or document:
+            send_message(connection, IO_READY)
 
             # EOF or additional control data ends the session. Input EOF arrives on the pipe.
             def cancelled():
                 return bool(select.select([connection], [], [], 0)[0])
 
-            launch_io.update(streams=streams, cancelled=cancelled)
+            launch_io["cancelled"] = cancelled
+        if document:
+            try:
+                launch_io["document"] = stack.enter_context(receive_document(connection))
+            except (OSError, ValueError):
+                block("invalid_document")
+                return
+        if interactive:
+            try:
+                launch_io["streams"] = stack.enter_context(receive_pipes(connection))
+            except (OSError, ValueError):
+                block("invalid_interactive_streams")
+                return
         try:
             code = launch(options, event, delegated=True, reporter=report, **launch_io)
         except (OSError, ValueError, RuntimeError):
@@ -268,20 +325,34 @@ def client_main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("application", help="application name from the administrator's launch policy")
     parser.add_argument("--interactive", action="store_true", help="connect standard input and plain-text output")
+    parser.add_argument("--document", type=Path, help="provide a read-only copy of a selected local file")
     options = parser.parse_args()
     if not APPLICATION.fullmatch(options.application):
         parser.error("Use a lowercase application name with letters, digits, and hyphens")
     try:
+        document = None
+        if options.document is not None:
+            try:
+                document = read_document(options.document)
+            except (OSError, ValueError):
+                print("Could not read a regular document up to 8 MiB", file=sys.stderr)
+                return LAUNCH_FAILED
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(3)
             connection.connect(SOCKET_PATH)
             request = {"application": options.application}
             if options.interactive:
                 request["interactive"] = True
+            if document is not None:
+                request["document"] = True
             send_message(connection, request)
             reply = receive_message(connection, LAUNCH_TIMEOUT + 10)
-            if options.interactive and reply == IO_READY:
-                if not exchange_pipes(connection):
+            if (options.interactive or document is not None) and reply == IO_READY:
+                if document is not None:
+                    connection.settimeout(3)
+                    connection.sendall(DOCUMENT_LENGTH.pack(len(document)))
+                    connection.sendall(document)
+                if options.interactive and not exchange_pipes(connection):
                     print("Contained application exceeded the 256 KiB output limit", file=sys.stderr)
                     return LAUNCH_FAILED
                 reply = receive_message(connection, LAUNCH_TIMEOUT + 10)

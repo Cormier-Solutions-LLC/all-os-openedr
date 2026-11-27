@@ -25,8 +25,10 @@ from .ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, select_filesystem
 
 BUBBLEWRAP = "/usr/bin/bwrap"
 PROGRAM = "/run/openedr/program"
+DOCUMENT = "/run/openedr/document"
 LAUNCH_FAILED = 125
 MEMFD_NOEXEC = getattr(os, "MFD_NOEXEC_SEAL", 0x0008)  # Linux 6.3+.
+IMMUTABLE_SEALS = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
 STATUS_LIMIT = 4096
 GLIBC_AMD64 = (
     ("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "/lib64/ld-linux-x86-64.so.2"),
@@ -105,6 +107,8 @@ def run_backend(command, descriptors, status_fd, timeout, on_created, *, streams
     observer = None
     stdin, stdout = streams if streams is not None else (subprocess.DEVNULL, subprocess.DEVNULL)
     try:
+        if cancelled is not None and cancelled():
+            raise ClientDisconnected
         spawn_ns = time.monotonic_ns()
         with subprocess.Popen(
             command, stdin=stdin, stdout=stdout, stderr=stdout,
@@ -182,12 +186,11 @@ def script_shell(snapshot):
     return shell, tuple(option.decode("ascii") for option in options)
 
 
-def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, cancelled=None):
+def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, document=None, cancelled=None):
     snapshot.flush()
     snapshot.seek(0)
     fd = snapshot.fileno()
-    seals = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
-    fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+    fcntl.fcntl(fd, fcntl.F_ADD_SEALS, IMMUTABLE_SEALS)
     status_fd = os.memfd_create("openedr-sandbox-status", os.MFD_CLOEXEC | MEMFD_NOEXEC)
     with os.fdopen(status_fd, "rb") as status, os.fdopen(
         os.memfd_create("openedr-sandbox-filter", os.MFD_CLOEXEC | MEMFD_NOEXEC), "w+b",
@@ -221,6 +224,11 @@ def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, c
             if not path.is_file():
                 raise ValueError("The sandbox requires a regular runtime file")
             bindings.extend(("--ro-bind", source, destination))
+        descriptors = (fd, status_fd, filter_fd)
+        if document is not None:
+            bindings.extend(("--perms", "0444", "--ro-bind-data", str(document), DOCUMENT))
+            descriptors += (document,)
+            arguments = (*arguments, DOCUMENT)
         command = [
             BUBBLEWRAP, "--unshare-user", "--disable-userns", "--unshare-pid", "--unshare-net",
             "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--new-session", "--die-with-parent",
@@ -231,7 +239,7 @@ def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, c
             "--", *entrypoint, *arguments,
         ]
         try:
-            code = run_backend(command, (fd, status_fd, filter_fd), status_fd, timeout, on_created,
+            code = run_backend(command, descriptors, status_fd, timeout, on_created,
                                streams=streams, cancelled=cancelled)
         except ClientDisconnected:
             return LAUNCH_FAILED, "client_disconnected", None
@@ -282,7 +290,7 @@ def emit(event, decision, reason, **details):
     })
 
 
-def launch(options, event, *, delegated=False, reporter=None, streams=None, cancelled=None):
+def launch(options, event, *, delegated=False, reporter=None, streams=None, document=None, cancelled=None):
     report = reporter or emit
     volume_device = None
     if delegated and options.execution_volume is None:
@@ -354,7 +362,7 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, canc
                     report(event, "blocked", "unsupported_interpreter")
                     return LAUNCH_FAILED
                 event["openedr_containment_interpreter"] = script[0]
-            if (not delegated and script is None and verdict == "trusted" and trusted_location(path, metadata)
+            if (not delegated and document is None and script is None and verdict == "trusted" and trusted_location(path, metadata)
                     and file_version(metadata) == file_version(os.fstat(fd))):
                 if volume_device is not None and not has_volume_approval(fd, digest):
                     report(event, "blocked", "ima_approval_missing")
@@ -376,7 +384,7 @@ def launch(options, event, *, delegated=False, reporter=None, streams=None, canc
                 })
 
             exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created,
-                                              streams=streams, cancelled=cancelled)
+                                              streams=streams, document=document, cancelled=cancelled)
             details = {**creation, "openedr_containment_exit_code": exit_code}
             if pid is not None:
                 details["openedr_containment_pid"] = pid
