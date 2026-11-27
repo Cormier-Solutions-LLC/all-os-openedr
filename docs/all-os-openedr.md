@@ -539,7 +539,7 @@ Install `alpine-sdk`, `openrc`, and `python3` on the Alpine build host. Configur
 sh packaging/alpine/build.sh "$(cat VERSION)" ./dist
 ```
 
-Copy the signed APK to the target and install it as root. Replace `VERSION` in the filename with the build's numeric version.
+Copy the signed APK to the target and install it as root. For a stable build, replace `VERSION` in the filename with its numeric version. For a nightly built from the preview source, pass the full release version to `build.sh` and install the emitted file. The nightly uses the UTC date as a prerelease suffix and the workflow run number as the APK package revision.
 
 ```sh
 apk add ./all-os-openedr-VERSION-r0.apk
@@ -610,6 +610,8 @@ Run `sh packaging/macos/install.sh` for the installer stub. The native plan cove
 ## GitHub delivery
 
 The project moves work from Backlog to Open, In Process, Pending Merge, Merged, and Released. Move an issue to Released when the published version contains it and the target's delivery checks pass. Daily upstream reconciliation imports clean changes from the corresponding upstream branch. A conflict, rewritten upstream history, or changes to licensing or workflow files requires maintainer review.
+
+Nightly filenames and tags use `<version>-nightly.<UTC date>.r.<workflow run number>.g<commit>`. The run number orders builds from the same day, including when the commit hashes sort in reverse order. Rerunning the workflow keeps its original date, run number, and tag. Publication validates an existing tag against the build commit and verifies the published checksums before leaving the assets in place.
 
 GitHub's repository Actions policy restricts workflow execution to the maintainer and permits only `push`, `pull_request_target`, `schedule`, and `workflow_dispatch`. Keep that policy active before enabling Actions. Maintainer updates and same-repository maintainer PRs from protected `codex/` or `release/` branches use `cormier-runners`. The PR workflow uses the base branch definition and checks out the exact head SHA after its identity checks pass. Contributors can run `sh scripts/check-preview.sh` in a local Linux environment and submit changes from their own forks. Keep the maintainer-only branch and stable tag rulesets active. Use Codex review on the exact PR revision before merging or publishing a stable release.
 

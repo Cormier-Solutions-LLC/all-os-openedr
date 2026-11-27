@@ -3,7 +3,7 @@ set -eu
 
 version=${1:?usage: build.sh VERSION OUTPUT_DIRECTORY}
 output=${2:?usage: build.sh VERSION OUTPUT_DIRECTORY}
-if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-nightly\.[0-9]{8}\.g[0-9a-f]{12})?$'; then
+if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-nightly\.[0-9]{8}(\.r\.[1-9][0-9]*)?\.g[0-9a-f]{12})?$'; then
     printf 'Use a numeric version or the release workflow nightly format.\n' >&2
     exit 2
 fi

@@ -1028,6 +1028,16 @@ fi
 sh packaging/debian/build.sh 0.1.0-ci "$work"
 package="$work/all-os-openedr_0.1.0-ci_all.deb"
 test "$(dpkg-deb --field "$package" Version)" = '0.1.0~ci'
+previous=
+for version in 0.1.0-nightly.20260101.gffffffffffff 0.1.0-nightly.20260101.r.9.gffffffffffff \
+    0.1.0-nightly.20260101.r.10.g000000000000 0.1.0; do
+    sh packaging/debian/build.sh "$version" "$work"
+    installed=$(dpkg-deb --field "$work/all-os-openedr_${version}_all.deb" Version)
+    if [ -n "$previous" ]; then
+        dpkg --compare-versions "$previous" lt "$installed"
+    fi
+    previous=$installed
+done
 dpkg-deb --extract "$package" "$work/package"
 cmp NOTICE.md "$work/package/usr/share/doc/all-os-openedr/NOTICE.md"
 cmp LICENSE.md "$work/package/usr/share/doc/all-os-openedr/copyright"
