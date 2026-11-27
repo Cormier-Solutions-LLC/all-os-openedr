@@ -105,8 +105,9 @@ class TCPTrace:
             **self.event(f"network.tcp_{phase}", f"{key}:{stamp}:{phase}"),
             "openedr_network_socket_id": identity(f"{self.boot_id}:tcp-socket:{key}"),
             "openedr_network_direction": DIRECTIONS[direction],
-            "openedr_network_namespace": netns,
-            "openedr_network_monotonic_ns": stamp,
+            # Keep large integers exact through the Wazuh JSON decoder.
+            "openedr_network_namespace": str(netns),
+            "openedr_network_monotonic_ns": str(stamp),
             "openedr_network_ip_version": local_address.version,
             "openedr_network_local_ip": str(local_address),
             "openedr_network_local_port": local,

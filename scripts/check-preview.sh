@@ -542,7 +542,8 @@ assert len({event["openedr_event_id"] for event in (started, established, ended)
 assert len({event["openedr_network_socket_id"] for event in (started, established, ended)}) == 1
 assert started["openedr_network_direction"] == "outbound"
 assert started["openedr_file_actor_id"] == hashlib.sha256(b"boot:1234:200").hexdigest()
-assert started["openedr_network_namespace"] == 4026531840
+assert started["openedr_network_namespace"] == "4026531840"
+assert started["openedr_network_monotonic_ns"] == "2500000001"
 assert started["openedr_network_ip_version"] == 6 and started["openedr_network_remote_port"] == 443
 assert started["openedr_process"] == "fixture\\xff"
 listening = tcp_record(4, 2500000001, 3, "4026531840 443 0 0.0.0.0 0.0.0.0")
