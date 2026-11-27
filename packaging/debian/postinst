@@ -2,13 +2,13 @@
 set -eu
 if [ "$1" = configure ]; then
     deb-systemd-helper update-state all-os-openedr-launch.socket all-os-openedr-containment-audit.service \
-        all-os-openedr-health.timer >/dev/null
+        all-os-openedr-health.timer all-os-openedr-removable-storage.service >/dev/null
 fi
 if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if [ -n "${2:-}" ]; then
         deb-systemd-invoke try-restart all-os-openedr.service all-os-openedr-lifecycle.service \
             all-os-openedr-file-provenance.service all-os-openedr-executable.service all-os-openedr-containment-audit.service \
-            all-os-openedr-health.timer
+            all-os-openedr-health.timer all-os-openedr-removable-storage.service
     fi
 fi

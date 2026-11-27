@@ -16,6 +16,7 @@ from .executable import ExecutableOpen
 from .file_provenance import FileProvenance
 from .plugins import API_VERSION, Plugin, Registry
 from .proc_connector import LinuxProcConnector
+from .removable_storage import RemovableStorage
 
 
 class LinuxProcesses:
@@ -79,6 +80,7 @@ PLUGINS = Registry({
     "linux-proc-connector": Plugin("collector", API_VERSION, LinuxProcConnector),
     "linux-file-provenance": Plugin("collector", API_VERSION, FileProvenance),
     "linux-executable-open": Plugin("collector", API_VERSION, ExecutableOpen),
+    "linux-removable-storage": Plugin("collector", API_VERSION, RemovableStorage),
     "json-lines": Plugin("sink", API_VERSION, JsonLines),
 })
 

@@ -27,7 +27,7 @@ Priority: optional
 Architecture: all
 Maintainer: All OS OpenEDR maintainers <all-os-openedr@users.noreply.github.com>
 Depends: python3 (>= 3.10), init-system-helpers
-Suggests: apparmor, auditd, bpftrace, bubblewrap, nftables, openssh-client, python3-seccomp, rsyslog, samba, samba-vfs-modules, wazuh-agent
+Suggests: apparmor, auditd, bpftrace, bubblewrap, nftables, openssh-client, python3-pyudev, python3-seccomp, rsyslog, samba, samba-vfs-modules, wazuh-agent
 Description: OpenEDR endpoint detection and protection preview for Linux
  The unprivileged collector writes local JSON process observations for Wazuh.
  Optional controls include IMA appraisal and managed executable containment.
@@ -60,6 +60,7 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/file-provenance-localfile.xml" \
     "$root/integrations/wazuh/executable-localfile.xml" \
     "$root/integrations/wazuh/policy-localfile.xml" \
+    "$root/integrations/wazuh/removable-storage-localfile.xml" \
     "$root/integrations/wazuh/response-localfile.xml" \
     "$root/integrations/wazuh/openedr-samba_decoders.xml" \
     "$root/integrations/wazuh/110100-openedr_rules.xml" \
@@ -69,6 +70,7 @@ install -m 0644 "$root/integrations/samba/rsyslog.conf" "$stage/usr/share/all-os
 install -m 0644 "$root/packaging/debian/all-os-openedr.service" \
     "$root/packaging/debian/all-os-openedr-health.service" \
     "$root/packaging/debian/all-os-openedr-health.timer" \
+    "$root/packaging/debian/all-os-openedr-removable-storage.service" \
     "$root/packaging/debian/all-os-openedr-containment-audit.service" \
     "$root/packaging/debian/all-os-openedr-launch.socket" \
     "$root/packaging/debian/all-os-openedr-launch@.service" \

@@ -39,7 +39,7 @@ from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volum
 from all_os_openedr.endpoint_health import broker_health, forwarder_health, sample
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, parse_catalog, read_catalog
 from all_os_openedr.executable_policy import policy_event, update_catalog
-from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
+from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events, mounted_filesystem_uuid
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
 from all_os_openedr.launch_broker import DOCUMENT_LENGTH, DOCUMENT_LIMIT, MAX_MESSAGE, PEER, parse_policy, print_output, read_local_file, read_export, receive_snapshot, receive_message, receive_pipes, save_export, send_message, service, validate_reply
@@ -47,6 +47,7 @@ from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
+from all_os_openedr.removable_storage import RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
@@ -404,9 +405,26 @@ assert after[OLD_DFID_NAME].name == b"before" and after[NEW_DFID_NAME].name == b
 directory = next(decode_events(file_event(ON_DIRECTORY | 0x20, file_record(DFID_NAME, b"object", b"."))))
 provenance = FileProvenance("/", "/tmp/preview-file-provenance.jsonl")
 provenance.device = 1
+filesystem_uuid = "7e272e85-8b59-4670-94c5-44f63fbad833"
+filesystem_uuid_bytes = bytes.fromhex(filesystem_uuid.replace("-", ""))
+
+def btrfs_uuid_ioctl(fd, request, data):
+    assert fd == 12
+    if request == 0x80111500:
+        raise OSError("generic filesystem UUID request unavailable")
+    assert request == 0x8400941F
+    assert len(data) == 1024
+    data[16:32] = filesystem_uuid_bytes
+
+with patch("fcntl.ioctl", side_effect=btrfs_uuid_ioctl):
+    provenance.filesystem_uuid = mounted_filesystem_uuid(12)
 with patch.object(provenance, "resolve_path", return_value=b"/folder"):
     observation, = provenance.materialize(*directory)
 assert observation["openedr_file_object_id"] == before[FID].identity(provenance.boot_id, 1)
+assert observation["openedr_file_mount_device"] == "0:1"
+assert observation["openedr_file_filesystem_uuid"] == filesystem_uuid
+with patch("fcntl.ioctl", side_effect=OSError("filesystem UUID unavailable")):
+    assert mounted_filesystem_uuid(12) is None
 assert observation["openedr_file_path"] == "/folder" and "openedr_file_parent_id" not in observation
 try:
     list(decode_events(rename[:-1]))
@@ -457,6 +475,49 @@ policy_feed = ElementTree.parse(integration / "policy-localfile.xml")
 assert policy_feed.findtext("location") == "/var/log/all-os-openedr-policy/changes.jsonl"
 policy_receipt = policy_event("applied", policy_catalog["target"], policy_catalog, hashlib.sha256(policy_payload).hexdigest())
 assert policy_receipt["openedr_policy_revision"] == 7 and policy_receipt["openedr_policy_signer"] == "fleet-policy"
+
+usb_disk = SimpleNamespace(device_type="disk", device_number=os.makedev(8, 0), sys_path="/sys/usb1/sda", sys_name="sda",
+                           properties={"ID_BUS": "usb", "ID_SERIAL": "vendor_fixture", "ID_SERIAL_SHORT": "fixture"},
+                           find_parent=lambda *_: None, attributes={}, device_node="/dev/sda", device_links=[])
+partition = SimpleNamespace(device_type="partition", device_number=os.makedev(8, 1), sys_path="/sys/usb1/sda/sda1",
+                            sys_name="sda1", properties={"ID_FS_UUID": "fixture-volume"},
+                            find_parent=lambda *_: usb_disk, action="add", device_node="/dev/sda1",
+                            device_links=["/dev/disk/by-uuid/fixture-volume"])
+storage = RemovableStorage()
+present, = storage.add(usb_disk, "device.present")
+attached, = storage.update(partition)
+assert present["openedr_device_id"] == attached["openedr_device_id"]
+assert attached["openedr_device_identity_scope"] == "reported_media"
+assert storage.update(partition) == []
+mounted_line = br"42 1 8:1 / /srv/USB\040fixtures rw - ext4 /dev/sda1 rw"
+mounted, = storage.scan_mounts([mounted_line])
+assert mounted["openedr_event"] == "device.mounted" and mounted["openedr_device_mountpoint"] == "/srv/USB fixtures"
+assert mounted["openedr_device_number"] == "8:1" and mounted["openedr_device_filesystem_uuid"] == "fixture-volume"
+assert storage.scan_mounts([mounted_line]) == []
+partition.action = "remove"
+removed, = storage.update(partition)
+assert removed["openedr_device_attachment"] == mounted["openedr_device_attachment"]
+assert storage.scan_mounts([mounted_line]) == []
+unmounted, = storage.scan_mounts([])
+assert unmounted["openedr_event"] == "device.unmounted" and unmounted["openedr_device_id"] == mounted["openedr_device_id"]
+partition.action = "add"
+reattached, = storage.update(partition)
+assert reattached["openedr_device_id"] == attached["openedr_device_id"]
+assert reattached["openedr_device_attachment"] != attached["openedr_device_attachment"]
+btrfs_line = br"43 1 0:19 /subvolume /srv/btrfs rw - btrfs /dev/disk/by-uuid/fixture-volume rw"
+btrfs_mounted, = storage.scan_mounts([btrfs_line], initial=True)
+assert btrfs_mounted["openedr_event"] == "device.mount_present"
+assert btrfs_mounted["openedr_device_number"] == "8:1" and btrfs_mounted["openedr_device_mount_number"] == "0:19"
+assert btrfs_mounted["openedr_device_attachment"] == reattached["openedr_device_attachment"]
+assert storage.scan_mounts([])[0]["openedr_event"] == "device.unmounted"
+serialless = SimpleNamespace(**{**vars(usb_disk), "sys_path": "/sys/usb2/sdb", "properties": {"ID_BUS": "usb"}})
+fallback, = storage.add(serialless, "device.present")
+assert fallback["openedr_device_identity_scope"] == "attachment"
+assert fallback["openedr_device_id"] == fallback["openedr_device_attachment"]
+unrelated = SimpleNamespace(**{**vars(usb_disk), "sys_path": "/sys/pci/sdc", "properties": {"ID_BUS": "ata"}})
+assert storage.add(unrelated, "device.present") == []
+removable_feed = ElementTree.parse(integration / "removable-storage-localfile.xml")
+assert removable_feed.findtext("location") == "/var/log/all-os-openedr-removable-storage/events.jsonl"
 approval = {
     "action": "release", "endpoint": "a" * 32, "agent": "001", "lease": "b" * 32,
     "alert": "1750012345.1234", "signer": "incident-operator", "issued_ms": 1750012345000, "seconds": 0,
@@ -976,6 +1037,7 @@ assert containment.findtext("log_format") == "json"
 launch_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
 assert re.fullmatch(launch_rules.findtext("rule[@id='110129']/field"), policy_receipt["openedr_event"])
 assert launch_rules.findtext("rule[@id='110130']/if_sid") == "110129"
+assert re.fullmatch(launch_rules.findtext("rule[@id='110131']/field"), mounted["openedr_event"])
 assert re.fullmatch(launch_rules.findtext("rule[@id='110127']/field"), degraded["openedr_event"])
 assert re.fullmatch(launch_rules.findtext("rule[@id='110128']/field"), degraded["openedr_health_status"])
 assert launch_rules.findtext("rule[@id='110128']/if_sid") == "110127"
@@ -1029,6 +1091,12 @@ for key, field_type in (
     ("openedr_policy_result", "keyword"),
     ("openedr_policy_target", "keyword"),
     ("openedr_policy_reason", "keyword"),
+    ("openedr_file_mount_device", "keyword"),
+    ("openedr_file_filesystem_uuid", "keyword"),
+    ("openedr_device_id", "keyword"),
+    ("openedr_device_number", "keyword"),
+    ("openedr_device_mount_id", "long"),
+    ("openedr_device_mount_number", "keyword"),
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),
@@ -1119,7 +1187,7 @@ test -x "$work/package/usr/bin/all-os-openedr-executable-policy"
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
     "$work/package/usr/bin/all-os-openedr-executable-policy" | sh -s -- apply --help >/dev/null
 test -x "$work/package/usr/bin/all-os-openedr-health"
-for unit in all-os-openedr-health.service all-os-openedr-health.timer; do
+for unit in all-os-openedr-health.service all-os-openedr-health.timer all-os-openedr-removable-storage.service; do
     cmp "packaging/debian/$unit" "$work/package/usr/lib/systemd/system/$unit"
 done
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
@@ -1129,7 +1197,7 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml policy-localfile.xml \
-    110100-openedr_rules.xml all-os-openedr-response \
+    removable-storage-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done

@@ -193,6 +193,30 @@ def visible_text(raw):
     return raw.decode("utf-8", errors="backslashreplace")
 
 
+def mounted_filesystem_uuid(fd):
+    import fcntl
+
+    # Linux FS_IOC_GETFSUUID returns a length byte followed by up to 16 bytes.
+    identity = bytearray(17)
+    try:
+        fcntl.ioctl(fd, 0x80111500, identity)
+    except OSError:
+        # Debian 13 Btrfs exposes its external UUID through BTRFS_IOC_FS_INFO.
+        info = bytearray(1024)
+        try:
+            fcntl.ioctl(fd, 0x8400941F, info)
+        except OSError:
+            return None
+        raw_uuid = info[16:32]
+    else:
+        if identity[0] != 16:
+            return None
+        raw_uuid = identity[1:]
+    if any(raw_uuid):
+        return str(uuid.UUID(bytes=bytes(raw_uuid)))
+    return None
+
+
 class FanotifyFilesystem:
     optional_init_flags = 0
 
@@ -207,9 +231,10 @@ class FanotifyFilesystem:
         self.libc = linux_calls()
         self.mount_fd = -1
         self.device = 0
+        self.filesystem_uuid = None
 
     def base_event(self, kind):
-        return {
+        event = {
             "openedr_source": "all-os-openedr",
             "openedr_schema": 1,
             "openedr_event": kind,
@@ -219,7 +244,11 @@ class FanotifyFilesystem:
             "openedr_boot_id": self.boot_id,
             "openedr_stream_id": self.stream_id,
             "openedr_file_scope": visible_text(os.fsencode(self.filesystem)),
+            "openedr_file_mount_device": f"{os.major(self.device)}:{os.minor(self.device)}",
         }
+        if self.filesystem_uuid:
+            event["openedr_file_filesystem_uuid"] = self.filesystem_uuid
+        return event
 
     def gap(self, reason):
         return {**self.base_event("file.stream_gap"), "openedr_gap_reason": reason}
@@ -253,6 +282,7 @@ class FanotifyFilesystem:
         self.mount_fd = os.open(self.filesystem, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
         try:
             self.device = os.fstat(self.mount_fd).st_dev
+            self.filesystem_uuid = mounted_filesystem_uuid(self.mount_fd)
             if self.separate_output and self.writes_to_watched_filesystem():
                 raise ValueError("file provenance logs require a different filesystem from the watch target")
             mount_id = fd_field(self.mount_fd, "mnt_id")
