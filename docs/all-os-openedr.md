@@ -313,6 +313,26 @@ Set `interactive` to `true` for applications that need line-oriented input and o
 
 Set `document` to `true` for an application that takes a document path as its last argument. An authorized user can run `all-os-openedr-run --interactive --document "./document.txt" my-app`. The client reads a regular file up to 8 MiB with the user's permissions. The sandbox receives a seekable, read-only snapshot at `/run/openedr/document` and the original host path stays outside the sandbox. The broker records its launch decision without the document name or contents. Omit `--interactive` for applications that can run without terminal I/O. [Linux file sealing](https://manpages.debian.org/trixie/manpages-dev/memfd_create.2.en.html) · [Bubblewrap file binding](https://manpages.debian.org/trixie/bubblewrap/bwrap.1.en.html)
 
+An administrator can grant a staged application up to 16 additional Debian amd64 shared libraries using its `libraries` list. Install the required packages from the Debian repositories. Specify each required library, including transitive dependencies, by its installed name under `/usr/lib/x86_64-linux-gnu`. The broker checks the directory, resolved files, and symlinks and mounts each approved file read-only at its named path. Existing base runtime files remain reserved. A missing or unsafe library blocks the launch with `runtime_library_unavailable`. The default exposes only the existing minimal runtime. [Debian dynamic linker](https://manpages.debian.org/trixie/manpages/ld.so.8.en.html) · [Bubblewrap read-only binds](https://manpages.debian.org/trixie/bubblewrap/bwrap.1.en.html)
+
+For example, install Debian's `jq` package and stage `/usr/bin/jq` as a root-owned `jq` binary on the enrolled volume. Add this entry to `applications` and run `all-os-openedr-run --interactive --document "./data.json" jq` as the enrolled user. [Debian libjq1 files](https://packages.debian.org/trixie/amd64/libjq1/filelist) · [Debian libonig5 files](https://packages.debian.org/trixie/amd64/libonig5/filelist)
+
+```json
+{
+  "jq": {
+    "program": "jq",
+    "uids": [1000],
+    "arguments": ["-c", "."],
+    "interactive": true,
+    "document": true,
+    "libraries": [
+      "/usr/lib/x86_64-linux-gnu/libjq.so.1",
+      "/usr/lib/x86_64-linux-gnu/libonig.so.5"
+    ]
+  }
+}
+```
+
 To offer a contained document action in a desktop file manager, install an application entry such as `~/.local/share/applications/openedr-my-app.desktop`. Use the MIME type supported by the enrolled command. This example opens one local text document in a terminal and leaves the user's default application selection in place. [Desktop Entry file arguments](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html)
 
 ```ini
@@ -334,7 +354,7 @@ Run `all-os-openedr-run --interactive --download "./selected-program"` or select
 
 On a GIO-based desktop, a protected user can select the containment entry as the default for a supported executable type. For example, `gio mime application/x-pie-executable all-os-openedr-contain-download.desktop` routes ordinary desktop opens of that type through containment. Apply the association to the file types used by that account. The package leaves desktop defaults to the administrator or user.
 
-The downloaded program receives the same minimal runtime, private scratch space, and syscall restrictions as other contained programs. The user can connect plain-text terminal input and output. The broker records the authenticated UID and digest under `downloaded file`. The original pathname stays out of the broker request. Normal shell execution follows the kernel policy. Use the containment action to open a denied download. [Linux file sealing](https://manpages.debian.org/trixie/manpages-dev/memfd_create.2.en.html) · [Desktop file arguments](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html)
+The downloaded program receives the same minimal runtime, private scratch space, and syscall restrictions as other contained programs. The optional top-level `download_libraries` list grants individual read-only shared libraries to all contained downloads for the enrolled accounts, using the same file and ownership checks as staged applications. Keep the list specific to the runtime needed by those accounts. The user can connect plain-text terminal input and output. The broker records the authenticated UID and digest under `downloaded file`. The original pathname stays out of the broker request. Normal shell execution follows the kernel policy. Use the containment action to open a denied download. [Linux file sealing](https://manpages.debian.org/trixie/manpages-dev/memfd_create.2.en.html) · [Desktop file arguments](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html)
 
 Test the direct IMA denial, authorized request, and unauthorized request as ordinary users before enrollment. The JSON launch record includes the authenticated caller UID and the enrolled application name for authorized requests. Wazuh uses the existing isolated and blocked launch rules. Apply the updated OpenSearch template for new indices. Stop and disable the socket to withdraw delegated launch access.
 

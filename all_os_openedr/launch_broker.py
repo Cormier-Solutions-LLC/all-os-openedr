@@ -21,7 +21,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .apparmor_policy import trusted_file
-from .containment import IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_download, launch_event
+from .containment import (
+    IMMUTABLE_SEALS, LAUNCH_FAILED, MEMFD_NOEXEC, emit, launch, launch_download, launch_event, valid_runtime_libraries,
+)
 from .executable import MAX_EXECUTABLE_SIZE, file_version
 from .sandbox_audit import start_audit_session
 
@@ -175,7 +177,8 @@ def valid_uids(uids):
 def parse_policy(value):
     base = {"schema", "catalog"}
     staged = {"filesystem", "uuid", "applications"}
-    if (not isinstance(value, dict) or not base <= value.keys() <= base | staged | {"download_uids"}
+    download_settings = {"download_uids", "download_libraries"}
+    if (not isinstance(value, dict) or not base <= value.keys() <= base | staged | download_settings
             or type(value["schema"]) is not int or value["schema"] != 1):
         raise ValueError("Invalid launch policy schema")
     catalog = value["catalog"]
@@ -184,8 +187,11 @@ def parse_policy(value):
     download_uids = value.get("download_uids", [])
     if not valid_uids(download_uids):
         raise ValueError("Invalid download caller UIDs")
+    download_libraries = value.get("download_libraries", [])
+    if not valid_runtime_libraries(download_libraries):
+        raise ValueError("Invalid download runtime libraries")
     if not staged.intersection(value):
-        return None, None, catalog, {}, download_uids
+        return None, None, catalog, {}, download_uids, download_libraries
     if not staged <= value.keys():
         raise ValueError("Incomplete staged application policy")
     filesystem = value["filesystem"]
@@ -202,9 +208,11 @@ def parse_policy(value):
     required = {"program", "uids", "arguments"}
     for name, app in applications.items():
         if (not APPLICATION.fullmatch(name) or not isinstance(app, dict)
-                or not required <= app.keys() <= required.union(IO_OPTIONS)
+                or not required <= app.keys() <= required.union(IO_OPTIONS, {"libraries"})
                 or any(type(app.get(key, False)) is not bool for key in IO_OPTIONS)):
             raise ValueError("Invalid application policy")
+        if not valid_runtime_libraries(app.get("libraries", [])):
+            raise ValueError("Invalid application runtime libraries")
         program, uids, arguments = app["program"], app["uids"], app["arguments"]
         if (not isinstance(program, str) or "\0" in program or not Path(program).parts
                 or Path(program).is_absolute() or ".." in Path(program).parts):
@@ -214,7 +222,7 @@ def parse_policy(value):
         if (not isinstance(arguments, list) or len(arguments) > 16
                 or any(not isinstance(arg, str) or "\0" in arg or len(arg.encode("utf-8")) > 256 for arg in arguments)):
             raise ValueError("Invalid application arguments")
-    return filesystem, str(volume), catalog, applications, download_uids
+    return filesystem, str(volume), catalog, applications, download_uids, download_libraries
 
 
 def read_policy():
@@ -263,11 +271,13 @@ def service(connection):
         block("invalid_request")
         return
     try:
-        filesystem, volume, catalog, applications, download_uids = read_policy()
+        filesystem, volume, catalog, applications, download_uids, download_libraries = read_policy()
     except (OSError, ValueError, RuntimeError):
         block("launch_policy_unavailable")
         return
-    app = {"uids": download_uids, "interactive": True, "arguments": ()} if download else applications.get(name)
+    app = ({
+        "uids": download_uids, "interactive": True, "arguments": (), "libraries": download_libraries,
+    } if download else applications.get(name))
     if app is None or uid == os.getuid() or uid not in app["uids"]:
         block("request_not_authorized")
         return
@@ -287,7 +297,7 @@ def service(connection):
         options.program = Path(filesystem) / app["program"]
     exported = None
     with ExitStack() as stack:
-        launch_io = {}
+        launch_io = {"libraries": app.get("libraries", ())}
         if download or requested:
             send_message(connection, IO_READY)
 
