@@ -53,6 +53,9 @@ from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
+from all_os_openedr.tcp_observations import (
+    MAX_ACCOUNT_EVENTS_PER_SECOND, MAX_ACTOR_EVENTS_PER_SECOND, TCPBudget, TCPTrace,
+)
 
 with TemporaryDirectory() as temporary:
     candidate = Path(temporary) / "candidate"
@@ -524,6 +527,57 @@ copy_feed = ElementTree.parse(integration / "removable-copies-localfile.xml")
 assert copy_feed.findtext("location") == "/var/log/all-os-openedr-removable-copies/events.jsonl"
 assert lifecycle_rules.find("rule[@id='110133']") is not None
 assert lifecycle_rules.find("rule[@id='110134']") is not None
+tcp_feed = ElementTree.parse(integration / "tcp-localfile.xml")
+assert tcp_feed.findtext("location") == "/var/log/all-os-openedr-tcp/events.jsonl"
+tcp_trace = TCPTrace("boot", "host", 100)
+comm = b"fixture\xff".ljust(16, b"\0").hex(" ")
+tuple6 = "4026531840 43210 443 ::1 ::1"
+
+def tcp_record(phase, stamp, direction=1, addresses=tuple6):
+    data = f"{phase} 2500000000 1 {stamp} 1234 2000000000 {direction} {comm} {addresses} 1000\n"
+    return tcp_trace.receive(json.dumps({"type": "printf", "data": data}))
+
+started = tcp_record(1, 2500000001)
+established = tcp_record(2, 2500000002)
+ended = tcp_record(5, 2500000003)
+assert len({event["openedr_event_id"] for event in (started, established, ended)}) == 3
+assert len({event["openedr_network_socket_id"] for event in (started, established, ended)}) == 1
+assert started["openedr_network_direction"] == "outbound"
+assert started["openedr_file_actor_id"] == hashlib.sha256(b"boot:1234:200").hexdigest()
+assert started["openedr_network_namespace"] == "4026531840"
+assert started["openedr_network_monotonic_ns"] == "2500000001"
+assert started["openedr_uid"] == "1000"
+assert started["openedr_network_ip_version"] == 6 and started["openedr_network_remote_port"] == 443
+assert started["openedr_process"] == "fixture\\xff"
+listening = tcp_record(4, 2500000001, 3, "4026531840 443 0 0.0.0.0 0.0.0.0")
+assert listening["openedr_network_direction"] == "listener" and "openedr_network_remote_ip" not in listening
+assert listening["openedr_network_ip_version"] == 4
+assert tcp_record(2, 2500000003, 2)["openedr_gap_reason"] == "tcp_invalid_trace_record"
+assert tcp_record(5, 2499999999)["openedr_gap_reason"] == "tcp_invalid_trace_record"
+assert tcp_record(5, 2500000003, 1, tuple6.replace("::1 ::1", "::1 127.0.0.1"))[
+    "openedr_gap_reason"
+] == "tcp_invalid_trace_record"
+capacity = tcp_trace.receive(json.dumps({"type": "printf", "data": "map_full\n"}))
+assert capacity["openedr_gap_reason"] == "tcp_socket_tracking_capacity"
+gap = tcp_trace.receive(b'{"type":"lost_events","data":3}')
+assert gap["openedr_gap_reason"] == "tcp_kernel_events_lost"
+assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110135']/field"), started["openedr_event"])
+assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110136']/field"), gap["openedr_event"])
+clock = [1]
+budget = TCPBudget(tcp_trace, clock=lambda: clock[0])
+for _ in range(MAX_ACTOR_EVENTS_PER_SECOND):
+    assert budget.admit(started) is started
+assert budget.admit(started)["openedr_gap_reason"] == "tcp_output_rate_limit"
+assert budget.admit(started) is None
+assert budget.admit(gap) is gap and budget.admit(gap) is None
+for index in range(MAX_ACCOUNT_EVENTS_PER_SECOND - MAX_ACTOR_EVENTS_PER_SECOND):
+    other_actor = {**started, "openedr_file_actor_id": f"peer-{index}"}
+    assert budget.admit(other_actor) is other_actor
+assert budget.admit({**started, "openedr_file_actor_id": "over-account"}) is None
+other_account = {**started, "openedr_file_actor_id": "new-account", "openedr_uid": "1001"}
+assert budget.admit(other_account) is other_account
+clock[0] += 1
+assert budget.admit(started) is started
 fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 8388609, "fixed-uuid", 101)
 usb_volume = Volume(Mount(52, "8:2", "/srv/USB volume", "ext4", "/dev/sdb1"), 8388610, "usb-uuid", 102, "media-id")
 transfer = TransferTrace(fixed_volume, usb_volume, "boot", "host")
@@ -1145,6 +1199,11 @@ assert template["template"]["mappings"]["dynamic"] is False
 assert template["version"] >= 2
 fields = template["template"]["mappings"]["properties"]["data"]["properties"]
 for key, field_type in (
+    ("openedr_network_socket_id", "keyword"),
+    ("openedr_network_namespace", "long"),
+    ("openedr_network_local_ip", "ip"),
+    ("openedr_network_remote_ip", "ip"),
+    ("openedr_network_remote_port", "integer"),
     ("openedr_process_id", "keyword"),
     ("openedr_parent_process_id", "keyword"),
     ("openedr_stream_id", "keyword"),
@@ -1271,7 +1330,7 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
     "$work/package/usr/bin/all-os-openedr-executable-policy" | sh -s -- apply --help >/dev/null
 test -x "$work/package/usr/bin/all-os-openedr-health"
 for unit in all-os-openedr-health.service all-os-openedr-health.timer all-os-openedr-removable-storage.service \
-    all-os-openedr-removable-copies.service; do
+    all-os-openedr-removable-copies.service all-os-openedr-tcp.service; do
     cmp "packaging/debian/$unit" "$work/package/usr/lib/systemd/system/$unit"
 done
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
@@ -1281,10 +1340,11 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml policy-localfile.xml \
-    removable-copies-localfile.xml removable-storage-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
+    removable-copies-localfile.xml removable-storage-localfile.xml tcp-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done
+cmp packaging/debian/tcp-observations.bt "$work/package/usr/share/all-os-openedr/network/tcp-observations.bt"
 cmp integrations/samba/rsyslog.conf "$work/package/usr/share/all-os-openedr/samba/rsyslog.conf"
 (cd "$work/package/usr/lib/all-os-openedr" && python3 -B -m all_os_openedr --once --output "$work/packaged.jsonl")
 test -s "$work/packaged.jsonl"

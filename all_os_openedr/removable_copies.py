@@ -8,7 +8,6 @@ import os
 import platform
 import select
 import socket
-import stat
 import struct
 import subprocess
 import sys
@@ -18,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .evidence_log import exclusive_log, rotate_evidence
 from .file_provenance import checked, visible_text
 from .ima_audit import append
 from .removable_storage import Mount, device_evidence, mounts_from
@@ -255,21 +255,7 @@ class TransferLog:
 
     def append(self, event):
         size = len(json.dumps(event, separators=(",", ":"))) + 1
-        try:
-            metadata = self.path.stat(follow_symlinks=False)
-        except FileNotFoundError:
-            metadata = None
-        if metadata is not None:
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise OSError("The transfer log must be a regular file with one link")
-            if metadata.st_size + size > LOG_MAX_BYTES:
-                for index in range(LOG_BACKUPS, 0, -1):
-                    source = self.path if index == 1 else self.path.with_name(f"{self.path.name}.{index - 1}")
-                    target = self.path.with_name(f"{self.path.name}.{index}")
-                    try:
-                        source.replace(target)
-                    except FileNotFoundError:
-                        continue
+        rotate_evidence(self.path, size, LOG_MAX_BYTES, LOG_BACKUPS)
         append(event, log=self.path)
 
 
@@ -281,7 +267,6 @@ def main():
     try:
         if platform.system() != "Linux" or platform.machine() != "x86_64":
             raise ValueError("The removable copy tracer requires Linux amd64")
-        import fcntl
         import pyudev
 
         context = pyudev.Context()
@@ -293,16 +278,7 @@ def main():
         namespace = Path("/proc/self/ns/mnt").stat().st_ino
         command = ["/usr/bin/bpftrace", "-q", "-B", "line", "-f", "json", PROGRAM,
                    str(fixed.device), str(removable.device), str(namespace)]
-        metadata = OUTPUT.parent.stat(follow_symlinks=False)
-        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
-            raise ValueError("The removable copy tracer requires a root-owned log directory")
-        flag = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
-        with os.fdopen(os.open(OUTPUT.with_suffix(".lock"), flag, 0o600), "r+b") as lock:
-            metadata = os.fstat(lock.fileno())
-            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077
-                    or metadata.st_nlink != 1):
-                raise OSError("The transfer log requires a private root-owned lock")
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with exclusive_log(OUTPUT):
             log = TransferLog(trace)
             environment = {**os.environ, "BPFTRACE_MAX_STRLEN": str(PATH_BYTES + 16)}
             with subprocess.Popen(command, stdout=subprocess.PIPE, env=environment) as child:

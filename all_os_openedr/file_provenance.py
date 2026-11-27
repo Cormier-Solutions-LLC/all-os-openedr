@@ -151,6 +151,10 @@ def fd_field(fd, name):
     return ""
 
 
+def linux_actor_id(boot_id, pid, start_ticks):
+    return hashlib.sha256(f"{boot_id}:{pid}:{start_ticks}".encode()).hexdigest()
+
+
 def actor_snapshot(pid, pidfd, boot_id):
     if pid <= 0:
         return {"openedr_file_attribution": "unavailable"}
@@ -181,7 +185,7 @@ def actor_snapshot(pid, pidfd, boot_id):
         return actor
     actor.update({
         "openedr_file_attribution": "pidfd_snapshot",
-        "openedr_file_actor_id": hashlib.sha256(f"{boot_id}:{pid}:{start_ticks}".encode()).hexdigest(),
+        "openedr_file_actor_id": linux_actor_id(boot_id, pid, start_ticks),
         "openedr_file_observed_uid": uid,
         "openedr_file_observed_euid": effective_uid,
         "openedr_process": process_stat[opening + 1:closing],

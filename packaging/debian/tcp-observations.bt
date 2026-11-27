@@ -1,0 +1,141 @@
+// Debian 13 kernel BTF. Only endpoint addresses and process metadata leave BPF.
+// The kernel socket pointer is used only as an internal map key. It is never emitted.
+
+fentry:tcp_connect
+{
+    $sk = args.sk;
+    $key = (uint64)$sk;
+    if ($key == 0 || pid == 0 || (uint64)curtask->mm == 0) {
+        return;
+    }
+    $actor = (pid, curtask->group_leader->start_boottime, 1, buf(curtask->group_leader->comm, 16), nsecs(monotonic), cpu, uid);
+    @owners[$key] = $actor;
+    if (!@owners[$key].0) {
+        printf("map_full\n");
+    }
+    $socket = $sk->__sk_common;
+    $family = $socket.skc_family;
+    if ($family == 2) {
+        printf("1 %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop($socket.skc_rcv_saddr), ntop($socket.skc_daddr), $actor.6);
+    } else if ($family == 10) {
+        printf("1 %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop(10, $socket.skc_v6_rcv_saddr.in6_u.u6_addr8),
+            ntop(10, $socket.skc_v6_daddr.in6_u.u6_addr8), $actor.6);
+    }
+}
+
+fexit:inet_accept
+/retval == 0/
+{
+    $sk = args.newsock->sk;
+    if ($sk->sk_protocol != 6) {
+        return;
+    }
+    $key = (uint64)$sk;
+    if ($key == 0 || pid == 0 || (uint64)curtask->mm == 0) {
+        return;
+    }
+    $actor = (pid, curtask->group_leader->start_boottime, 2, buf(curtask->group_leader->comm, 16), nsecs(monotonic), cpu, uid);
+    @owners[$key] = $actor;
+    if (!@owners[$key].0) {
+        printf("map_full\n");
+    }
+    // A reset can reach the accepted socket before accept() returns.
+    if ($sk->__sk_common.skc_state == 7) {
+        delete(@owners[$key]);
+    }
+    $socket = $sk->__sk_common;
+    $family = $socket.skc_family;
+    if ($family == 2) {
+        printf("3 %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop($socket.skc_rcv_saddr), ntop($socket.skc_daddr), $actor.6);
+    } else if ($family == 10) {
+        printf("3 %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop(10, $socket.skc_v6_rcv_saddr.in6_u.u6_addr8),
+            ntop(10, $socket.skc_v6_daddr.in6_u.u6_addr8), $actor.6);
+    }
+}
+
+fexit:inet_listen
+/retval == 0/
+{
+    $sk = args.sock->sk;
+    if (@owners[(uint64)$sk].0) {
+        return;
+    }
+    if ($sk->sk_protocol != 6) {
+        return;
+    }
+    $key = (uint64)$sk;
+    if ($key == 0 || pid == 0 || (uint64)curtask->mm == 0) {
+        return;
+    }
+    $actor = (pid, curtask->group_leader->start_boottime, 3, buf(curtask->group_leader->comm, 16), nsecs(monotonic), cpu, uid);
+    @owners[$key] = $actor;
+    if (!@owners[$key].0) {
+        printf("map_full\n");
+    }
+    $socket = $sk->__sk_common;
+    $family = $socket.skc_family;
+    if ($family == 2) {
+        printf("4 %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop($socket.skc_rcv_saddr), ntop($socket.skc_daddr), $actor.6);
+    } else if ($family == 10) {
+        printf("4 %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop(10, $socket.skc_v6_rcv_saddr.in6_u.u6_addr8),
+            ntop(10, $socket.skc_v6_daddr.in6_u.u6_addr8), $actor.6);
+    }
+}
+
+fentry:tcp_set_state
+/args.state == 1 || args.state == 7/
+{
+    $sk = args.sk;
+    $key = (uint64)$sk;
+    $actor = @owners[$key];
+    if (!$actor.0 || (args.state == 1 && $actor.2 != 1)) {
+        return;
+    }
+    $phase = args.state == 1 ? 2 : 5;
+    if (args.state == 7) {
+        delete(@owners[$key]);
+    }
+    $socket = $sk->__sk_common;
+    $family = $socket.skc_family;
+    if ($family == 2) {
+        printf("%d %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $phase, $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop($socket.skc_rcv_saddr), ntop($socket.skc_daddr), $actor.6);
+    } else if ($family == 10) {
+        printf("%d %llu %d %llu %d %llu %d %rh %u %d %d %s %s %u\n",
+            $phase, $actor.4, $actor.5, nsecs(monotonic), $actor.0, $actor.1, $actor.2, $actor.3,
+            $socket.skc_net.net->ns.inum, $socket.skc_num, bswap($socket.skc_dport),
+            ntop(10, $socket.skc_v6_rcv_saddr.in6_u.u6_addr8),
+            ntop(10, $socket.skc_v6_daddr.in6_u.u6_addr8), $actor.6);
+    }
+}
+
+fentry:__sk_free
+/@owners[(uint64)args.sk].0/
+{
+    delete(@owners[(uint64)args.sk]);
+}
+
+END
+{
+    clear(@owners);
+}
