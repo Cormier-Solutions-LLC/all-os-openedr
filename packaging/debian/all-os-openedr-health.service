@@ -1,0 +1,18 @@
+[Unit]
+Description=All OS OpenEDR endpoint protection health check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/all-os-openedr-health --record
+SuccessExitStatus=1
+TimeoutStartSec=30s
+LogsDirectory=all-os-openedr-health
+LogsDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH

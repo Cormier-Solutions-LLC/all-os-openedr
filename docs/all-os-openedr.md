@@ -364,6 +364,22 @@ The downloaded program receives the same minimal runtime, private scratch space,
 
 Test the direct IMA denial, authorized request, and unauthorized request as ordinary users before enrollment. The JSON launch record includes the authenticated caller UID and the enrolled application name for authorized requests. Wazuh uses the existing isolated and blocked launch rules. Apply the updated OpenSearch template for new indices. Stop and disable the socket to withdraw delegated launch access.
 
+### Verify that endpoint protection is active
+
+On a Debian endpoint with the broker and an IMA-managed execution volume, prepare the two fixed probe scripts on that volume. Use the mount path from the broker's policy.
+
+```sh
+sudo all-os-openedr-health --prepare-ima /srv/openedr-exec
+sudo all-os-openedr-health
+sudo systemctl enable --now all-os-openedr-health.timer
+```
+
+The root-only check asks the unprivileged broker to run the approved script directly, confirm that IMA denies the unsigned copy, and run a separate script in the actual sandbox. The sandbox probe requires a private writable `/tmp` and verifies that the host's `/etc/passwd` is absent. The IMA result covers direct execution on the configured volume. An account-only download policy reports `execution_volume_unconfigured`. The expected kernel denial references `.openedr-health/unsigned` on the configured mount.
+
+The command prints one JSON record and returns `0` when all three checks are ready. A `1` indicates degradation. Check the `openedr_health_ima`, `openedr_health_broker`, and `openedr_health_forwarder` values to locate the failure. Forwarding status reflects the fresh local Wazuh agent connection. Confirm end-to-end delivery by checking for the event ID on the manager.
+
+The opt-in timer samples every five minutes and appends to `/var/log/all-os-openedr-health/checks.jsonl`. Create the log with `sudo systemctl start all-os-openedr-health.service`, then add the packaged [Wazuh localfile stanza](../integrations/wazuh/health-localfile.xml) to the endpoint and reload the [rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Use rule `110127` to find samples and `110128` for degraded protection or forwarding. Apply OpenSearch template version 16 to new dedicated indices or update the active index with the four health fields. Include the local file in your site's log retention policy.
+
 ### Protect local directories and mounted SMB shares
 
 Pass `--protect-tree DIR` to grant recursive reads and have AppArmor block and audit writes, appends, and hard links through the protected paths. Pass `--write-directory DIR` to allow creation, updates, and renames of files directly under a separate existing directory. The writable rule leaves subdirectories outside its scope. AppArmor matches canonical paths and applies the profile to the managed workload and its descendants. [Debian AppArmor policy syntax](https://manpages.debian.org/trixie/apparmor/apparmor.d.5.en.html)
@@ -475,7 +491,7 @@ curl --fail-with-body --cacert "$WAZUH_CA" --header "@$WAZUH_AUTH_HEADER" \
 
 The endpoint rechecks the actor and enrollment, sends `SIGKILL` through the Linux process descriptor, and checks for exit. Check rule `110126` for `terminated`. A `termination_pending` receipt means the signal was sent and exit was still unconfirmed when the five-second check ended. The response sends one signal to the selected process. Systemd can stop remaining processes or start a replacement according to the service's policy. Use the normal service start procedure after reviewing the workload. [Linux process descriptors](https://manpages.debian.org/trixie/manpages-dev/pidfd_open.2.en.html) · [Linux no new privileges](https://docs.kernel.org/userspace-api/no_new_privs.html)
 
-Use OpenSearch template version 15 for new indices or add the process response mappings to the current dedicated index. The receipts record the PID, UID, boot ID, actor ID, unit, source alert, and response ID.
+Use the current OpenSearch template for new indices or add the process response mappings to the current dedicated index. The receipts record the PID, UID, boot ID, actor ID, unit, source alert, and response ID.
 
 The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 

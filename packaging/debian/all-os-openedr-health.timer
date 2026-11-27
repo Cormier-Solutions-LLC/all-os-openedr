@@ -1,0 +1,10 @@
+[Unit]
+Description=Check All OS OpenEDR endpoint protection periodically
+
+[Timer]
+OnActiveSec=10s
+OnUnitInactiveSec=5min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
