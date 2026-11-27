@@ -35,7 +35,7 @@ from unittest.mock import patch
 from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
-from all_os_openedr.application_protocols import FTPRequests, HTTPRequests
+from all_os_openedr.application_protocols import FTPRequests, HTTPRequests, PATH_LIMIT
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
 from all_os_openedr.dns_observations import DNSTrace, dns_name
@@ -612,6 +612,12 @@ headers = b"?token=secret HTTP/1.1\r\nAuthorization: Basic secret\r\n\r\n"
 request, = http.feed(0, headers)
 assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
                    "openedr_request_host": "example.test", "openedr_request_path": "/a"}
+request, = http.feed(0, b"GET //nested/path;token=secret?query=secret HTTP/1.1\r\nHost: origin.test\r\n\r\n")
+assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
+                   "openedr_request_host": "origin.test", "openedr_request_path": "//nested/path"}
+request, = http.feed(0, b"GET /" + b"x" * PATH_LIMIT + b" HTTP/1.1\r\nHost: origin.test\r\n\r\n")
+assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
+                   "openedr_request_path_scope": "unavailable"}
 bad_body = b"GET /fake HTTP/1.1\r\n\r\n"
 fixed = b"POST /fixed HTTP/1.1\r\nContent-Length: " + str(len(bad_body)).encode() + b"\r\n\r\n"
 chunked = b"POST /chunk HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
@@ -655,6 +661,22 @@ assert list(ftp.feed(1, b"226 Complete\r\n")) == []
 request, = ftp.feed(0, b"RETR link/../item\r\n")
 assert request["openedr_request_path"] == "/base/pub/link/../item"
 assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+assert list(ftp.feed(0, b"USER other\r\nPASS secret\r\n")) == []
+request, = ftp.feed(0, b"RETR pending\r\n")
+assert request["openedr_request_path"] == "pending" and request["openedr_request_path_scope"] == "relative"
+assert list(ftp.feed(1, b"331 Username okay\r\n230 Logged in\r\n226 Complete\r\n")) == []
+request, = ftp.feed(0, b"RETR after-login\r\n")
+assert request["openedr_request_path"] == "after-login" and request["openedr_request_path_scope"] == "relative"
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+assert list(ftp.feed(0, b"PWD\r\n")) == []
+assert list(ftp.feed(1, b'257 "/new-home"\r\n')) == []
+request, = ftp.feed(0, b"RETR after-pwd\r\n")
+assert request["openedr_request_path"] == "/new-home/after-pwd"
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+request, = ftp.feed(0, b"RETR export://item\r\n")
+assert request == {"openedr_application_protocol": "ftp", "openedr_request_method": "RETR",
+                   "openedr_request_path_scope": "unavailable"}
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
 assert list(ftp.feed(0, b"CDUP\r\n")) == []
 assert list(ftp.feed(1, b"250 Directory changed\r\n")) == []
 request, = ftp.feed(0, b"RETR ../new\r\n")
@@ -685,10 +707,15 @@ def protocol_feed(sequence, data=b"", flags=0):
 assert protocol_feed(0xfffffffc, flags=SYN) == []
 assert protocol_feed(0xfffffffd, b"GET /") == []
 assert protocol_feed(0xfffffffd, b"GET /") == []
-observed, = protocol_feed(2, b"example HTTP/1.1\r\nHost: example.test\r\n\r\n")
+last_segment = b"example HTTP/1.1\r\nHost: example.test\r\n\r\n"
+observed, = protocol_feed(2, last_segment)
 assert observed["openedr_file_actor_id"] == started["openedr_file_actor_id"]
 assert observed["openedr_request_path"] == "/example"
 assert observed["openedr_network_attribution"] == "socket_connect_actor"
+packet.stamp += 121_000_000_000
+resumed, = protocol_feed(2 + len(last_segment), b"GET /after-idle HTTP/1.1\r\n\r\n")
+assert resumed["openedr_request_path"] == "/after-idle"
+assert resumed["openedr_network_socket_id"] == observed["openedr_network_socket_id"]
 assert list(protocol.receive_packet(CLOSED_SOCKET.pack(packet.cookie, packet.actor.connected))) == []
 assert not protocol.flows
 packet.actor.connected += 1
