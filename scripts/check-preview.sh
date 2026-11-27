@@ -45,7 +45,7 @@ from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
-from all_os_openedr.response import apply, decode_token, move_without_replacing
+from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
@@ -422,6 +422,49 @@ approval = {
 }
 encoded = base64.urlsafe_b64encode(json.dumps(approval).encode()).decode()
 assert decode_token(f"v1.{encoded}.")[0] == approval
+process_approval = {
+    **approval, "action": "terminate", "pid": 778, "uid": 1200,
+    "boot_id": "a431703b-1fb1-43c3-9344-4cfac8e9ef6c", "actor_id": "d" * 64, "unit": "workload.service",
+}
+payload = base64.urlsafe_b64encode(json.dumps(process_approval).encode()).decode()
+assert decode_token(f"v1.{payload}.")[0] == process_approval
+for fields in ({"pid": 1}, {"uid": 0}, {"boot_id": "old"}, {"actor_id": "bad"},
+               {"unit": "../workload.service"}, {"seconds": 20}, {"action": "release"}):
+    request = {**process_approval, **fields}
+    payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
+    try:
+        decode_token(f"v1.{payload}.")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"Accepted an invalid process response: {fields}")
+with patch("all_os_openedr.response.BOOT_ID") as boot, \
+     patch("all_os_openedr.response.approval_age"), \
+     patch("all_os_openedr.response.consume_approval") as consume, \
+     patch("all_os_openedr.response.audit") as process_audit, \
+     patch("all_os_openedr.response.verify_process_scope") as target, \
+     patch("all_os_openedr.response.os.pidfd_open", return_value=23) as open_pid, \
+     patch("all_os_openedr.response.os.close") as close, \
+     patch("all_os_openedr.response.signal.pidfd_send_signal") as send, \
+     patch("all_os_openedr.response.select.poll") as poll:
+    boot.read_text.return_value = process_approval["boot_id"] + "\n"
+    poll.return_value.poll.return_value = [(23, 1)]
+    apply_process_response(process_approval, {"workload.service": 1200})
+    open_pid.assert_called_once_with(778)
+    assert target.call_count == 2
+    assert send.call_args.args[0] == 23
+    assert process_audit.call_args.args[0] == "terminated"
+    close.assert_called_once_with(23)
+    send.reset_mock()
+    target.side_effect = [None, ValueError("process_identity_mismatch")]
+    try:
+        apply_process_response(process_approval, {"workload.service": 1200})
+    except ValueError as error:
+        assert str(error) == "process_identity_mismatch"
+    else:
+        raise AssertionError("Terminated a process after its final identity check failed")
+    assert consume.call_count == 2
+    send.assert_not_called()
 quarantine_approval = {
     **approval, "action": "quarantine", "path": "tools/program file",
     "volume": "a431703b-1fb1-43c3-9344-4cfac8e9ef6c", "sha256": "d" * 64,
@@ -887,6 +930,11 @@ for key, field_type in (
     ("openedr_response_deadline_ms", "long"),
     ("openedr_response_file_sha256", "keyword"),
     ("openedr_response_volume_uuid", "keyword"),
+    ("openedr_response_process_pid", "long"),
+    ("openedr_response_process_uid", "long"),
+    ("openedr_response_process_boot_id", "keyword"),
+    ("openedr_response_process_actor_id", "keyword"),
+    ("openedr_response_process_unit", "keyword"),
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),

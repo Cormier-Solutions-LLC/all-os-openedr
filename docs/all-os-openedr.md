@@ -455,7 +455,27 @@ Save the quarantine ID printed by the signer. The endpoint moves the verified in
 
 To restore after review, repeat the signing command with `sign restore --lease QUARANTINE_ID` and the original volume, relative path, and digest. A restore requires the matching receipt and refuses to overwrite an occupied destination, including a symlink. The file stays quarantined across a reboot and remains available to a root operator. If Wazuh is unavailable, use `sudo all-os-openedr-response local-restore --lease QUARANTINE_ID` from the endpoint console. The console command reads the original path and digest from the private receipt. Retain the receipts and the audit log according to site policy. [Linux atomic rename](https://manpages.debian.org/trixie/manpages-dev/renameat.2.en.html)
 
-Use OpenSearch template version 14 for new indices, or add the new keyword mappings for `data.openedr_response_file_sha256` and `data.openedr_response_volume_uuid` to the current dedicated index. The response audit records the digest, volume, quarantine ID, and Wazuh authorization fields. Restrict the signed dispatch body and local receipt to authorized operators because both include the original relative path.
+Use the current OpenSearch template for new indices, or add the keyword mappings for `data.openedr_response_file_sha256` and `data.openedr_response_volume_uuid` to the current dedicated index. The response audit records the digest, volume, quarantine ID, and Wazuh authorization fields. Restrict the signed dispatch body and local receipt to authorized operators because both include the original relative path.
+
+### Stop an enrolled Debian process from a Wazuh alert
+
+Add a `process_targets` map to the root-owned response configuration. Each key is an explicitly enrolled systemd service in `system.slice`. Its value is the numeric UID of the service's dedicated non-root account. For example, use `"process_targets": {"workload.service": 1200}` to enroll one service. Use cgroup v2, keep the service cgroup under administrator control, and set `NoNewPrivileges=yes` and an empty `CapabilityBoundingSet=` on the workload. The endpoint checks the target's real, effective, saved, and filesystem UIDs, capability sets, and live cgroup membership.
+
+Use an alert with `openedr_file_attribution: pidfd_snapshot` from the file or executable collector. Take the PID, boot ID, and actor ID from `openedr_pid`, `openedr_boot_id`, and `openedr_file_actor_id`. Match the observed UID and the workload's service unit to the approved configuration before signing. The actor ID identifies a process lifetime across PID reuse and exec. Sign only after verifying the endpoint in Wazuh.
+
+```sh
+all-os-openedr-response sign terminate --endpoint "$ENDPOINT_ID" --agent 001 \
+  --alert "$ALERT_ID" --signer incident-operator --key "$SIGNING_KEY" \
+  --pid "$TARGET_PID" --uid "$TARGET_UID" --boot-id "$BOOT_ID" \
+  --actor-id "$ACTOR_ID" --unit "$TARGET_UNIT" > "$work/terminate.json"
+curl --fail-with-body --cacert "$WAZUH_CA" --header "@$WAZUH_AUTH_HEADER" \
+  --header 'Content-Type: application/json' --request PUT \
+  --data-binary "@$work/terminate.json" "$WAZUH_API/active-response?agents_list=001"
+```
+
+The endpoint rechecks the actor and enrollment, sends `SIGKILL` through the Linux process descriptor, and checks for exit. Check rule `110126` for `terminated`. A `termination_pending` receipt means the signal was sent and exit was still unconfirmed when the five-second check ended. The response sends one signal to the selected process. Systemd can stop remaining processes or start a replacement according to the service's policy. Use the normal service start procedure after reviewing the workload. [Linux process descriptors](https://manpages.debian.org/trixie/manpages-dev/pidfd_open.2.en.html) · [Linux no new privileges](https://docs.kernel.org/userspace-api/no_new_privs.html)
+
+Use OpenSearch template version 15 for new indices or add the process response mappings to the current dedicated index. The receipts record the PID, UID, boot ID, actor ID, unit, source alert, and response ID.
 
 The [Debian EDR milestone](https://github.com/Cormier-Solutions-LLC/all-os-openedr/milestone/14) tracks Windows feature parity, including process lifetime and lineage, prevention, containment, and recovery.
 

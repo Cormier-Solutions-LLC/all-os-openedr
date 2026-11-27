@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 14,
+  "version": 15,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -57,6 +57,11 @@
             "openedr_response_deadline_ms": {"type": "long"},
             "openedr_response_file_sha256": {"type": "keyword"},
             "openedr_response_volume_uuid": {"type": "keyword"},
+            "openedr_response_process_pid": {"type": "long"},
+            "openedr_response_process_uid": {"type": "long"},
+            "openedr_response_process_boot_id": {"type": "keyword"},
+            "openedr_response_process_actor_id": {"type": "keyword"},
+            "openedr_response_process_unit": {"type": "keyword"},
             "openedr_file_scope": {"type": "keyword", "ignore_above": 4096},
             "openedr_file_mask": {"type": "long"},
             "openedr_file_notification_id": {"type": "keyword"},
