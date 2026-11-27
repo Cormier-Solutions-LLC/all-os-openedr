@@ -170,17 +170,21 @@ def approval_from_wazuh():
 
 def verify(request, payload, signature):
     keys = restricted_file(SIGNERS)
-    with tempfile.TemporaryDirectory(dir=STATE) as directory:
+    require(verify_ssh_signature(keys, request["signer"], NAMESPACE, payload, signature, STATE), "bad_signature")
+
+
+def verify_ssh_signature(keys, signer, namespace, payload, signature, state_directory):
+    with tempfile.TemporaryDirectory(dir=state_directory) as directory:
         allowed = Path(directory, "allowed")
         signed = Path(directory, "signature")
         allowed.write_bytes(keys)
         signed.write_bytes(signature)
         result = subprocess.run(
-            ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", request["signer"],
-             "-n", NAMESPACE, "-s", str(signed)],
+            ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", signer,
+             "-n", namespace, "-s", str(signed)],
             input=payload, capture_output=True, timeout=5, check=False,
         )
-    require(result.returncode == 0, "bad_signature")
+    return result.returncode == 0
 
 
 def nft(*args, script=None):

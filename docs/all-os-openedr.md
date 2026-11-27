@@ -74,6 +74,31 @@ The catalog is read once at startup. Replace the file and restart the service to
 
 Merge the [executable localfile stanza](../integrations/wazuh/executable-localfile.xml) into Wazuh and update the packaged `110100-openedr_rules.xml` on the manager. Reserve rule IDs `110107` for opens and `110108` for local untrusted matches. Queue overflow uses `110106`. Install template version 5 or add the new executable fields to existing dedicated OpenSearch index mappings before querying by digest or verdict. The collector computes verdicts locally while the Wazuh path is unavailable.
 
+### Apply a signed executable verdict policy
+
+Use a dedicated OpenSSH signing key on the policy administrator's workstation. Install the public key on each endpoint as an allowed signer under `/etc/all-os-openedr/executable-policy-signers`. Use a unique 32-character lowercase hexadecimal target per endpoint. Install `/etc/all-os-openedr/executable-policy.json` with `schema` set to `1` and `target` set to that ID. The directory and both files require root ownership and root-only write access. The broker and executable sensor must use `/etc/all-os-openedr-executable-verdicts.json` as their catalog.
+
+An allowed signers entry uses the principal recorded in the signed document and the executable policy namespace.
+
+```text
+fleet-policy namespaces="all-os-openedr-executable-policy-v1" ssh-ed25519 <public-key>
+```
+
+Create a JSON document with `schema` set to `2`, the endpoint `target`, an increasing integer `revision`, the `signer` principal, and a `verdicts` object mapping lowercase SHA-256 hashes to `trusted` or `untrusted`. The complete document is limited to 1 MiB. Each revision specifies the full catalog. To restore older verdicts, sign those verdicts with a revision higher than the active revision.
+
+```sh
+# On the signing workstation.
+ssh-keygen -Y sign -f ~/.ssh/openedr-policy -n all-os-openedr-executable-policy-v1 catalog.json
+
+# On the enrolled endpoint, after transporting the exact document and signature.
+sudo all-os-openedr-executable-policy apply catalog.json catalog.json.sig
+sudo all-os-openedr-executable-policy status
+```
+
+The updater verifies the exact bytes and serializes approved writes. The active file carries its revision through a reboot. Leave the active file under the updater's control to preserve replay protection. The running sensor reloads the catalog when the file changes. Subsequent broker decisions and executable observations report the same catalog digest. Signed verdicts apply to the managed launcher. Kernel IMA approval has its own controls and procedure.
+
+The command writes applied or rejected receipts to `/var/log/all-os-openedr-policy/changes.jsonl`. Use `sudo all-os-openedr-executable-policy status --record` to record the current revision if the original receipt was lost. Create the log with that command before enabling the packaged [Wazuh localfile stanza](../integrations/wazuh/policy-localfile.xml). Reload the [Wazuh rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Rule `110129` records policy receipts and `110130` alerts on rejected updates. Apply OpenSearch template version 17 to new dedicated indices or add its policy fields to the active index.
+
 ### Kernel execution detection with Wazuh
 
 On Debian 13 amd64, Linux Audit can detect a successful launch of a protected executable by a login identity other than the one you approve. Choose a real executable stored under an administrator-controlled path and use the numeric UID of the approved login account. Audit records the original login UID across privilege changes. The policy excludes processes whose login UID is unset, including many system services.
@@ -378,7 +403,7 @@ The root-only check asks the unprivileged broker to run the approved script dire
 
 The command prints one JSON record and returns `0` when all three checks are ready. A `1` indicates degradation. Check the `openedr_health_ima`, `openedr_health_broker`, and `openedr_health_forwarder` values to locate the failure. Forwarding status reflects the fresh local Wazuh agent connection. Confirm end-to-end delivery by checking for the event ID on the manager.
 
-The opt-in timer samples every five minutes and appends to `/var/log/all-os-openedr-health/checks.jsonl`. Create the log with `sudo systemctl start all-os-openedr-health.service`, then add the packaged [Wazuh localfile stanza](../integrations/wazuh/health-localfile.xml) to the endpoint and reload the [rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Use rule `110127` to find samples and `110128` for degraded protection or forwarding. Apply OpenSearch template version 16 to new dedicated indices or update the active index with the four health fields. Include the local file in your site's log retention policy.
+The opt-in timer samples every five minutes and appends to `/var/log/all-os-openedr-health/checks.jsonl`. Create the log with `sudo systemctl start all-os-openedr-health.service`, then add the packaged [Wazuh localfile stanza](../integrations/wazuh/health-localfile.xml) to the endpoint and reload the [rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Use rule `110127` to find samples and `110128` for degraded protection or forwarding. Apply the current OpenSearch template to new dedicated indices or update the active index with the four health fields. Include the local file in your site's log retention policy.
 
 ### Protect local directories and mounted SMB shares
 

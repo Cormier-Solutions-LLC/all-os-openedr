@@ -34,6 +34,7 @@ Description: OpenEDR endpoint detection and protection preview for Linux
 EOF
 install -m 0644 "$root"/all_os_openedr/*.py "$stage/usr/lib/all-os-openedr/all_os_openedr/"
 install -m 0755 "$root/packaging/debian/all-os-openedr-audit-rules" \
+    "$root/packaging/debian/all-os-openedr-executable-policy" \
     "$root/packaging/debian/all-os-openedr-health" \
     "$root/packaging/debian/all-os-openedr-ima" \
     "$root/packaging/debian/all-os-openedr-launch" \
@@ -58,6 +59,7 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/lifecycle-localfile.xml" \
     "$root/integrations/wazuh/file-provenance-localfile.xml" \
     "$root/integrations/wazuh/executable-localfile.xml" \
+    "$root/integrations/wazuh/policy-localfile.xml" \
     "$root/integrations/wazuh/response-localfile.xml" \
     "$root/integrations/wazuh/openedr-samba_decoders.xml" \
     "$root/integrations/wazuh/110100-openedr_rules.xml" \
