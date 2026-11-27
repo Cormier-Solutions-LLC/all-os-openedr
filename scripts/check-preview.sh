@@ -671,6 +671,8 @@ discontinuity, = protocol_feed(44, b"GET /later HTTP/1.1\r\n\r\n")
 assert discontinuity["openedr_gap_reason"] == "application_stream_discontinuity"
 protocol_feed_xml = ElementTree.parse(integration / "protocol-localfile.xml")
 assert protocol_feed_xml.findtext("location") == "/var/log/all-os-openedr-protocol/events.jsonl"
+assert protocol_feed_xml.findtext("only-future-events") == "no"
+assert protocol_feed_xml.find("only-future-events").get("max-size") == "16MB"
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110139']/field"), observed["openedr_event"])
 assert re.fullmatch(lifecycle_rules.findtext("rule[@id='110140']/field"), discontinuity["openedr_event"])
 fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 8388609, "fixed-uuid", 101)

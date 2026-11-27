@@ -87,7 +87,7 @@ The application socket ID binds the kernel socket cookie to the observed connect
 
 The sensor starts from an observed TCP handshake. Gaps, reordered segments beyond the observed sequence, unsupported framing, or exhausted bounds stop interpretation for the affected connection. IP fragmentation and IPv6 extension headers are outside the current packet parser. FTP application parsing stops at AUTH. HTTPS and encrypted FTP payloads remain opaque. The TCP service can still report their connection metadata.
 
-Merge the packaged `protocol-localfile.xml` into the Wazuh agent and update `110100-openedr_rules.xml` on the manager. Rule `110139` reports request metadata and rule `110140` reports detected gaps. Apply OpenSearch template version 22 to new dedicated indices or add its fields to existing mappings. The service applies separate packet quotas per process and account, along with the normal event quotas and log retention.
+Merge the packaged `protocol-localfile.xml` into the Wazuh agent and update `110100-openedr_rules.xml` on the manager. Rule `110139` reports request metadata and rule `110140` reports detected gaps. Apply OpenSearch template version 22 to new dedicated indices or add its fields to existing mappings. The service applies separate packet quotas per process and account, along with the normal event quotas and log retention. The stanza resumes unread events from the active 16 MiB log after the Wazuh collector restarts. A prolonged outage can leave earlier events in rotated files that require separate recovery. [Wazuh log collector configuration](https://documentation.wazuh.com/current/user-manual/reference/ossec-conf/localfile.html#only-future-events)
 
 ### Trace file activity on a mounted filesystem
 
