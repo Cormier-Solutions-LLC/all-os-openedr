@@ -251,7 +251,12 @@ def watch(trace):
             program = require_pointer(library, library.bpf_object__find_program_by_name(obj, name), "Find protocol probe")
             link = library.bpf_program__attach_cgroup(program, group) if name.startswith(b"protocol_") else library.bpf_program__attach(program)
             cleanup.callback(library.bpf_link__destroy, require_pointer(library, link, f"Attach {name.decode()}"))
-        loss_counts = [0, 0]
+        loss_counts = {
+            "kernel_events_lost": 0,
+            "packet_rate_limit": 0,
+            "account_actor_capacity": 0,
+            "kernel_actor_capacity": 0,
+        }
         count = c.c_uint64()
         while True:
             status = library.ring_buffer__poll(ring, 250)
@@ -259,12 +264,12 @@ def watch(trace):
                 raise failure
             if status != -errno.EINTR:
                 require(status, "Read protocol ring buffer")
-            for index, reason in enumerate(("kernel_events_lost", "packet_rate_limit")):
+            for index, reason in enumerate(loss_counts):
                 key = c.c_uint(index)
                 require(library.bpf_map_lookup_elem(lost, c.byref(key), c.byref(count)), "Read protocol loss counter")
-                if count.value != loss_counts[index]:
-                    loss_counts[index] = count.value
-                    if index == 0:
+                if count.value != loss_counts[reason]:
+                    loss_counts[reason] = count.value
+                    if reason == "kernel_events_lost":
                         trace.flows.clear()
                     publish(trace.gap(reason))
 

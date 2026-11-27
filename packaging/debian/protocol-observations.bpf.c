@@ -14,6 +14,16 @@
 #define TCP_PROTOCOL 6
 #define ACTOR_PACKETS 128
 #define ACCOUNT_PACKETS 256
+#define ACCOUNT_ACTORS 128
+#define RETIRING_ACCOUNT (~0ULL)
+
+enum loss_reason {
+    LOST_PACKET,
+    PACKET_RATE,
+    ACCOUNT_ACTOR_CAPACITY,
+    KERNEL_ACTOR_CAPACITY,
+    LOSS_REASONS,
+};
 
 struct ns_common { unsigned int inum; } __attribute__((preserve_access_index));
 struct net { struct ns_common ns; } __attribute__((preserve_access_index));
@@ -85,6 +95,12 @@ struct {
     __type(value, struct actor);
 } actors SEC(".maps");
 struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u32);
+    __type(value, __u64);
+} active_accounts SEC(".maps");
+struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
@@ -92,7 +108,7 @@ struct {
 } scratch SEC(".maps");
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2);
+    __uint(max_entries, LOSS_REASONS);
     __type(key, __u32);
     __type(value, __u64);
 } lost SEC(".maps");
@@ -113,11 +129,43 @@ struct {
     __uint(max_entries, 1 << 22);
 } packets SEC(".maps");
 
-static __always_inline void lose_packet(__u32 key)
+static __always_inline void report_gap(__u32 key)
 {
     __u64 *count = bpf_map_lookup_elem(&lost, &key);
     if (count)
         __sync_fetch_and_add(count, 1);
+}
+
+static __always_inline int charge_account(__u32 uid)
+{
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        __u64 *count = bpf_map_lookup_elem(&active_accounts, &uid);
+        if (!count) {
+            __u64 once = 1;
+            if (!bpf_map_update_elem(&active_accounts, &uid, &once, BPF_NOEXIST))
+                return 0;
+            continue;
+        }
+        __u64 active = *(__u64 volatile *)count;
+        if (active == RETIRING_ACCOUNT)
+            continue;
+        if (active >= ACCOUNT_ACTORS)
+            return ACCOUNT_ACTOR_CAPACITY;
+        if (__sync_val_compare_and_swap(count, active, active + 1) == active)
+            return 0;
+    }
+    return KERNEL_ACTOR_CAPACITY;
+}
+
+static __always_inline void release_account(__u32 uid)
+{
+    __u64 *count = bpf_map_lookup_elem(&active_accounts, &uid);
+    if (!count)
+        return;
+    /* Only delete an empty entry after excluding concurrent reservations. */
+    if (__sync_fetch_and_sub(count, 1) == 1 &&
+        __sync_val_compare_and_swap(count, 0, RETIRING_ACCOUNT) == 0)
+        bpf_map_delete_elem(&active_accounts, &uid);
 }
 
 static __always_inline int allow_packet(void *map, const void *key, __u32 limit)
@@ -152,8 +200,22 @@ int BPF_PROG(observe_connect, struct sock *socket)
     actor.netns = BPF_CORE_READ(socket, __sk_common.skc_net.net, ns.inum);
     BPF_CORE_READ_INTO(&actor.comm, leader, comm);
     __u64 cookie = bpf_get_socket_cookie(socket);
-    if (!cookie || bpf_map_update_elem(&actors, &cookie, &actor, BPF_ANY))
-        lose_packet(0);
+    if (!cookie) {
+        report_gap(KERNEL_ACTOR_CAPACITY);
+        return 0;
+    }
+    if (bpf_map_lookup_elem(&actors, &cookie))
+        return 0;
+    int reason = charge_account(actor.uid);
+    if (reason) {
+        report_gap(reason);
+        return 0;
+    }
+    if (bpf_map_update_elem(&actors, &cookie, &actor, BPF_NOEXIST)) {
+        release_account(actor.uid);
+        if (!bpf_map_lookup_elem(&actors, &cookie))
+            report_gap(KERNEL_ACTOR_CAPACITY);
+    }
     return 0;
 }
 
@@ -163,9 +225,13 @@ static __always_inline void retire_socket(struct sock *socket)
     struct actor *actor = bpf_map_lookup_elem(&actors, &cookie);
     if (actor) {
         struct closed_socket closed = { .cookie = cookie, .connected = actor->connected };
-        if (actor->seen && bpf_ringbuf_output(&packets, &closed, sizeof(closed), 0))
-            lose_packet(0);
-        bpf_map_delete_elem(&actors, &cookie);
+        __u32 uid = actor->uid;
+        __u32 seen = actor->seen;
+        if (!bpf_map_delete_elem(&actors, &cookie)) {
+            release_account(uid);
+            if (seen && bpf_ringbuf_output(&packets, &closed, sizeof(closed), 0))
+                report_gap(LOST_PACKET);
+        }
     }
 }
 
@@ -233,13 +299,13 @@ static __always_inline int observe_packet(struct __sk_buff *skb, int incoming)
     struct account_key account = { .uid = actor->uid, .second = second };
     if (!allow_packet(&actor_budget, &who, ACTOR_PACKETS) ||
         !allow_packet(&account_budget, &account, ACCOUNT_PACKETS)) {
-        lose_packet(1);
+        report_gap(PACKET_RATE);
         return 1;
     }
     __u32 zero = 0;
     struct scratch_packet *slot = bpf_map_lookup_elem(&scratch, &zero);
     if (!slot || __sync_val_compare_and_swap(&slot->busy, 0, 1)) {
-        lose_packet(0);
+        report_gap(LOST_PACKET);
         return 1;
     }
     struct packet *packet = &slot->packet;
@@ -266,7 +332,7 @@ static __always_inline int observe_packet(struct __sk_buff *skb, int incoming)
         actor->seen = 1;
     if ((capture && bpf_skb_load_bytes(skb, offset, packet->body, capture)) ||
         bpf_ringbuf_output(&packets, packet, __builtin_offsetof(struct packet, body) + capture, 0))
-        lose_packet(0);
+        report_gap(LOST_PACKET);
     __sync_lock_test_and_set(&slot->busy, 0);
     return 1;
 }
