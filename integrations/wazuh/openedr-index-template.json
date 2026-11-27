@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 18,
+  "version": 19,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -86,6 +86,17 @@
             "openedr_device_mount_number": {"type": "keyword"},
             "openedr_device_mountpoint": {"type": "keyword", "ignore_above": 4096},
             "openedr_device_filesystem": {"type": "keyword"},
+            "openedr_copy_actor_id": {"type": "keyword"},
+            "openedr_copy_method": {"type": "keyword"},
+            "openedr_copy_direction": {"type": "keyword"},
+            "openedr_copy_bytes": {"type": "long"},
+            "openedr_copy_removable_uuid": {"type": "keyword"},
+            "openedr_copy_source_path": {"type": "keyword", "ignore_above": 4096},
+            "openedr_copy_source_id": {"type": "keyword"},
+            "openedr_copy_source_offset": {"type": "long"},
+            "openedr_copy_destination_path": {"type": "keyword", "ignore_above": 4096},
+            "openedr_copy_destination_id": {"type": "keyword"},
+            "openedr_copy_destination_offset": {"type": "long"},
             "openedr_file_mask": {"type": "long"},
             "openedr_file_notification_id": {"type": "keyword"},
             "openedr_file_directory": {"type": "boolean"},

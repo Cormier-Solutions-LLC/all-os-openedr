@@ -1,0 +1,183 @@
+// Debian 13 kernel BTF. Arguments are the fixed and removable kernel dev_t
+// values and the monitored mount namespace. Sampled payload bytes stay in BPF.
+
+kfunc:vfs_read
+{
+    if (@read_stamp[tid]) {
+        delete(@read_stamp[tid]);
+        delete(@read_sample[tid]);
+        delete(@read_path[tid]);
+    }
+    $inode = args.file->f_inode;
+    $device = $inode->i_sb->s_dev;
+    if (curtask->nsproxy->mnt_ns->ns.inum == $3 &&
+        ($device == $1 || $device == $2) && ($inode->i_mode & 0xf000) == 0x8000) {
+        @read_file[tid] = (uint64)args.file;
+    }
+}
+
+kfunc:vfs_write
+/@read_stamp[tid]/
+{
+    $inode = args.file->f_inode;
+    $device = $inode->i_sb->s_dev;
+    $source = @read_sample[tid];
+    if (curtask->nsproxy->mnt_ns->ns.inum == $3 && ($inode->i_mode & 0xf000) == 0x8000 &&
+        ($device == $1 || $device == $2) && $device != $source.0 &&
+        (uint64)args.buf == $source.3 && args.count == $source.4 &&
+        nsecs(monotonic) - @read_stamp[tid] < 2000000000) {
+        $first = *uptr((uint64 *)args.buf);
+        $last = *uptr((uint64 *)((uint64)args.buf + args.count - 8));
+        if (($first || $last) && $first == $source.6 && $last == $source.7) {
+            @write_file[tid] = (uint64)args.file;
+            return;
+        }
+    }
+    delete(@read_stamp[tid]);
+    delete(@read_sample[tid]);
+    delete(@read_path[tid]);
+}
+
+kfunc:vfs_copy_file_range
+{
+    $in = args.file_in->f_inode->i_sb->s_dev;
+    $out = args.file_out->f_inode->i_sb->s_dev;
+    if (curtask->nsproxy->mnt_ns->ns.inum == $3 &&
+        (($in == $1 && $out == $2) || ($in == $2 && $out == $1))) {
+        @range_files[tid] = ((uint64)args.file_in, (uint64)args.file_out);
+    }
+}
+
+kfunc:do_sendfile
+/curtask->nsproxy->mnt_ns->ns.inum == $3/
+{
+    @sendfile[tid] = 1;
+}
+
+kfunc:security_file_permission
+{
+    $file = (uint64)args.file;
+    $path = (struct path *)($file + offsetof(struct file, f_path));
+    $range = @range_files[tid];
+    if ($file == @read_file[tid] || $file == $range.0) {
+        @in_path[tid] = path($path, 256);
+    } else if ($file == @write_file[tid] || $file == $range.1) {
+        @out_path[tid] = path($path, 256);
+    } else if (@sendfile[tid]) {
+        $inode = args.file->f_inode;
+        $device = $inode->i_sb->s_dev;
+        if (($device == $1 || $device == $2) && ($inode->i_mode & 0xf000) == 0x8000) {
+            if (args.mask & 4) {
+                @in_path[tid] = path($path, 256);
+                @send_source[tid] = $file;
+            } else if (args.mask & 2) {
+                @out_path[tid] = path($path, 256);
+                @send_destination[tid] = $file;
+            }
+        }
+    }
+}
+
+kretfunc:vfs_read
+/@read_file[tid]/
+{
+    if (retval >= 16 && args.pos && @in_path[tid] != "") {
+        $inode = args.file->f_inode;
+        $address = (uint64)args.buf;
+        $bytes = (uint64)retval;
+        $first = *uptr((uint64 *)$address);
+        $last = *uptr((uint64 *)($address + $bytes - 8));
+        if ($first || $last) {
+            @read_stamp[tid] = nsecs(monotonic);
+            @read_sample[tid] = ($inode->i_sb->s_dev, $inode->i_ino, $inode->i_generation,
+                $address, $bytes, *args.pos - retval, $first, $last);
+            @read_path[tid] = @in_path[tid];
+        }
+    }
+    delete(@read_file[tid]);
+    delete(@in_path[tid]);
+}
+
+kretfunc:vfs_write
+/@write_file[tid]/
+{
+    $source = @read_sample[tid];
+    if (retval > 0 && (uint64)retval == $source.4 && args.pos && @out_path[tid] != "") {
+        $inode = args.file->f_inode;
+        printf("buffered\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\t%s\n",
+            nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
+            $source.0, $source.1, $source.2, $source.5,
+            $inode->i_sb->s_dev, $inode->i_ino, $inode->i_generation, *args.pos - retval, retval,
+            @read_path[tid], @out_path[tid]);
+    }
+    delete(@write_file[tid]);
+    delete(@out_path[tid]);
+    delete(@read_stamp[tid]);
+    delete(@read_sample[tid]);
+    delete(@read_path[tid]);
+}
+
+kretfunc:vfs_copy_file_range
+/@range_files[tid].0/
+{
+    if (retval > 0 && @in_path[tid] != "" && @out_path[tid] != "") {
+        $in = args.file_in->f_inode;
+        $out = args.file_out->f_inode;
+        printf("copy_file_range\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\t%s\n",
+            nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
+            $in->i_sb->s_dev, $in->i_ino, $in->i_generation, args.pos_in,
+            $out->i_sb->s_dev, $out->i_ino, $out->i_generation, args.pos_out, retval,
+            @in_path[tid], @out_path[tid]);
+    }
+    delete(@range_files[tid]);
+    delete(@in_path[tid]);
+    delete(@out_path[tid]);
+}
+
+kretfunc:do_splice_direct
+/@sendfile[tid] && retval > 0/
+{
+    $in = args.in->f_inode;
+    $out = args.out->f_inode;
+    if ((uint64)args.in == @send_source[tid] && (uint64)args.out == @send_destination[tid] &&
+        $in->i_sb->s_dev != $out->i_sb->s_dev && @in_path[tid] != "" && @out_path[tid] != "") {
+        printf("sendfile\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%u\t%lld\t%u\t%llu\t%u\t%lld\t%lld\t%s\t%s\n",
+            nsecs(monotonic), curtask->group_leader->start_boottime, pid, uid,
+            $in->i_sb->s_dev, $in->i_ino, $in->i_generation, *args.ppos - retval,
+            $out->i_sb->s_dev, $out->i_ino, $out->i_generation, *args.opos - retval, retval,
+            @in_path[tid], @out_path[tid]);
+    }
+}
+
+kretfunc:do_sendfile
+/@sendfile[tid]/
+{
+    delete(@sendfile[tid]);
+    delete(@send_source[tid]);
+    delete(@send_destination[tid]);
+    delete(@in_path[tid]);
+    delete(@out_path[tid]);
+}
+
+rawtracepoint:sched_process_exit
+/@read_stamp[tid]/
+{
+    delete(@read_stamp[tid]);
+    delete(@read_sample[tid]);
+    delete(@read_path[tid]);
+}
+
+END
+{
+    clear(@read_file);
+    clear(@write_file);
+    clear(@range_files);
+    clear(@sendfile);
+    clear(@send_source);
+    clear(@send_destination);
+    clear(@in_path);
+    clear(@out_path);
+    clear(@read_stamp);
+    clear(@read_sample);
+    clear(@read_path);
+}

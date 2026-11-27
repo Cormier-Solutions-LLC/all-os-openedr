@@ -47,7 +47,8 @@ from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
-from all_os_openedr.removable_storage import RemovableStorage
+from all_os_openedr.removable_copies import TransferTrace, Volume
+from all_os_openedr.removable_storage import Mount, RemovableStorage
 from all_os_openedr.response import apply, apply_process_response, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
@@ -518,6 +519,37 @@ unrelated = SimpleNamespace(**{**vars(usb_disk), "sys_path": "/sys/pci/sdc", "pr
 assert storage.add(unrelated, "device.present") == []
 removable_feed = ElementTree.parse(integration / "removable-storage-localfile.xml")
 assert removable_feed.findtext("location") == "/var/log/all-os-openedr-removable-storage/events.jsonl"
+copy_feed = ElementTree.parse(integration / "removable-copies-localfile.xml")
+assert copy_feed.findtext("location") == "/var/log/all-os-openedr-removable-copies/events.jsonl"
+assert lifecycle_rules.find("rule[@id='110133']") is not None
+assert lifecycle_rules.find("rule[@id='110134']") is not None
+fixed_volume = Volume(Mount(51, "8:1", "/srv/fixed", "ext4", "/dev/sda1"), 8388609, "fixed-uuid", 101)
+usb_volume = Volume(Mount(52, "8:2", "/srv/USB volume", "ext4", "/dev/sdb1"), 8388610, "usb-uuid", 102, "media-id")
+transfer = TransferTrace(fixed_volume, usb_volume, "boot", "host")
+copy_line = ("buffered\t100\t10\t1001\t1000\t8388609\t19\t8\t0\t8388610\t28\t7\t4\t64"
+             "\t/srv/fixed/input\t/srv/USB volume/output\n")
+record = transfer.receive(json.dumps({"type": "printf", "data": copy_line}))
+assert record["openedr_event"] == "file.copy_inferred"
+assert record["openedr_copy_direction"] == "to_removable" and record["openedr_copy_bytes"] == 64
+assert record["openedr_copy_removable_uuid"] == "usb-uuid" and record["openedr_device_id"] == "media-id"
+assert record["openedr_copy_source_id"] != record["openedr_copy_destination_id"]
+assert record["openedr_copy_source_offset"] == 0 and record["openedr_copy_destination_offset"] == 4
+reverse = ("copy_file_range\t110\t10\t1001\t1000\t8388610\t28\t7\t4\t8388609\t19\t8\t0\t64"
+           "\t/srv/USB volume/output\t/srv/fixed/input\n")
+reverse_record = transfer.parse_transfer(reverse)
+assert reverse_record["openedr_event"] == "file.copy_observed"
+assert reverse_record["openedr_copy_direction"] == "from_removable"
+assert reverse_record["openedr_copy_actor_id"] == record["openedr_copy_actor_id"]
+assert reverse_record["openedr_copy_destination_id"] == record["openedr_copy_source_id"]
+assert transfer.parse_transfer(copy_line.replace("/srv/fixed/input", "/srv/fixed-bypass/input")) is None
+assert transfer.parse_transfer(copy_line.replace("/srv/fixed/input", "/srv/fixed/../unrelated/input")) is None
+assert transfer.parse_transfer(copy_line.replace("8388610", "8388609")) is None
+assert transfer.parse_transfer(copy_line.replace("input", "in\tput")) is None
+assert transfer.receive(b'{"type":"lost_events","data":2}')["openedr_gap_reason"] == "copy_trace_kernel_events_lost"
+with patch("all_os_openedr.removable_copies.unique_mount_id", side_effect=[101, 102]):
+    assert transfer.active()
+with patch("all_os_openedr.removable_copies.unique_mount_id", side_effect=[101, 103]):
+    assert not transfer.active()
 approval = {
     "action": "release", "endpoint": "a" * 32, "agent": "001", "lease": "b" * 32,
     "alert": "1750012345.1234", "signer": "incident-operator", "issued_ms": 1750012345000, "seconds": 0,
@@ -1097,6 +1129,10 @@ for key, field_type in (
     ("openedr_device_number", "keyword"),
     ("openedr_device_mount_id", "long"),
     ("openedr_device_mount_number", "keyword"),
+    ("openedr_copy_direction", "keyword"),
+    ("openedr_copy_bytes", "long"),
+    ("openedr_copy_source_id", "keyword"),
+    ("openedr_copy_destination_offset", "long"),
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),
@@ -1187,7 +1223,8 @@ test -x "$work/package/usr/bin/all-os-openedr-executable-policy"
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
     "$work/package/usr/bin/all-os-openedr-executable-policy" | sh -s -- apply --help >/dev/null
 test -x "$work/package/usr/bin/all-os-openedr-health"
-for unit in all-os-openedr-health.service all-os-openedr-health.timer all-os-openedr-removable-storage.service; do
+for unit in all-os-openedr-health.service all-os-openedr-health.timer all-os-openedr-removable-storage.service \
+    all-os-openedr-removable-copies.service; do
     cmp "packaging/debian/$unit" "$work/package/usr/lib/systemd/system/$unit"
 done
 sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
@@ -1197,7 +1234,7 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml policy-localfile.xml \
-    removable-storage-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
+    removable-copies-localfile.xml removable-storage-localfile.xml 110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
 done

@@ -18,7 +18,7 @@ trap 'rm -rf -- "$stage"' EXIT
 install -d "$stage/DEBIAN" "$stage/usr/lib/all-os-openedr/all_os_openedr" \
     "$stage/usr/lib/systemd/system" "$stage/usr/share/doc/all-os-openedr" \
     "$stage/usr/bin" "$stage/usr/share/all-os-openedr/wazuh" "$stage/usr/share/all-os-openedr/samba" \
-    "$stage/usr/share/all-os-openedr/containment" "$stage/usr/share/applications"
+    "$stage/usr/share/all-os-openedr/containment" "$stage/usr/share/all-os-openedr/storage" "$stage/usr/share/applications"
 cat > "$stage/DEBIAN/control" <<EOF
 Package: all-os-openedr
 Version: $package_version
@@ -49,6 +49,7 @@ install -m 0755 "$root/packaging/debian/all-os-openedr-ima-audit" \
     "$root/packaging/debian/all-os-openedr-launch-broker" "$stage/usr/lib/all-os-openedr/"
 install -m 0644 "$root/packaging/debian/containment-decisions.bt" \
     "$stage/usr/share/all-os-openedr/containment/decisions.bt"
+install -m 0644 "$root/packaging/debian/removable-copies.bt" "$stage/usr/share/all-os-openedr/storage/"
 install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/health-localfile.xml" \
     "$root/integrations/wazuh/containment-localfile.xml" \
@@ -60,6 +61,7 @@ install -m 0644 "$root/integrations/wazuh/audit-localfile.xml" \
     "$root/integrations/wazuh/file-provenance-localfile.xml" \
     "$root/integrations/wazuh/executable-localfile.xml" \
     "$root/integrations/wazuh/policy-localfile.xml" \
+    "$root/integrations/wazuh/removable-copies-localfile.xml" \
     "$root/integrations/wazuh/removable-storage-localfile.xml" \
     "$root/integrations/wazuh/response-localfile.xml" \
     "$root/integrations/wazuh/openedr-samba_decoders.xml" \
@@ -70,6 +72,7 @@ install -m 0644 "$root/integrations/samba/rsyslog.conf" "$stage/usr/share/all-os
 install -m 0644 "$root/packaging/debian/all-os-openedr.service" \
     "$root/packaging/debian/all-os-openedr-health.service" \
     "$root/packaging/debian/all-os-openedr-health.timer" \
+    "$root/packaging/debian/all-os-openedr-removable-copies.service" \
     "$root/packaging/debian/all-os-openedr-removable-storage.service" \
     "$root/packaging/debian/all-os-openedr-containment-audit.service" \
     "$root/packaging/debian/all-os-openedr-launch.socket" \

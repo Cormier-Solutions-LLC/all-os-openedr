@@ -1,0 +1,22 @@
+[Unit]
+Description=All OS OpenEDR removable file transfer evidence
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/lib/all-os-openedr
+EnvironmentFile=/etc/default/all-os-openedr-removable-copies
+ExecStart=/usr/bin/python3 -B -m all_os_openedr.removable_copies --fixed ${OPENEDR_FIXED_VOLUME} --removable ${OPENEDR_REMOVABLE_VOLUME}
+LogsDirectory=all-os-openedr-removable-copies
+LogsDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+LimitMEMLOCK=infinity
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
