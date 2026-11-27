@@ -35,7 +35,7 @@ from unittest.mock import patch
 from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
-from all_os_openedr.application_protocols import FTPRequests, HTTPRequests
+from all_os_openedr.application_protocols import FTPRequests, HTTPRequests, PATH_LIMIT
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
 from all_os_openedr.dns_observations import DNSTrace, dns_name
@@ -615,6 +615,9 @@ assert request == {"openedr_application_protocol": "http", "openedr_request_meth
 request, = http.feed(0, b"GET //nested/path;token=secret?query=secret HTTP/1.1\r\nHost: origin.test\r\n\r\n")
 assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
                    "openedr_request_host": "origin.test", "openedr_request_path": "//nested/path"}
+request, = http.feed(0, b"GET /" + b"x" * PATH_LIMIT + b" HTTP/1.1\r\nHost: origin.test\r\n\r\n")
+assert request == {"openedr_application_protocol": "http", "openedr_request_method": "GET",
+                   "openedr_request_path_scope": "unavailable"}
 bad_body = b"GET /fake HTTP/1.1\r\n\r\n"
 fixed = b"POST /fixed HTTP/1.1\r\nContent-Length: " + str(len(bad_body)).encode() + b"\r\n\r\n"
 chunked = b"POST /chunk HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
@@ -669,6 +672,10 @@ assert list(ftp.feed(0, b"PWD\r\n")) == []
 assert list(ftp.feed(1, b'257 "/new-home"\r\n')) == []
 request, = ftp.feed(0, b"RETR after-pwd\r\n")
 assert request["openedr_request_path"] == "/new-home/after-pwd"
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+request, = ftp.feed(0, b"RETR export://item\r\n")
+assert request == {"openedr_application_protocol": "ftp", "openedr_request_method": "RETR",
+                   "openedr_request_path_scope": "unavailable"}
 assert list(ftp.feed(1, b"226 Complete\r\n")) == []
 assert list(ftp.feed(0, b"CDUP\r\n")) == []
 assert list(ftp.feed(1, b"250 Directory changed\r\n")) == []

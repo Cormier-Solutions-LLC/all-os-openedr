@@ -187,7 +187,8 @@ class HTTPRequests:
             raise ValueError("HTTP request queue exceeds the observation bound")
         self.pending.append((method, offered_upgrade))
         self.streams[0].body(length, transfer)
-        if method in {b"GET", b"POST"} and (fields := request_target(target, host)):
+        if method in {b"GET", b"POST"}:
+            fields = request_target(target, host) or {"openedr_request_path_scope": "unavailable"}
             return {"openedr_application_protocol": "http", "openedr_request_method": method.decode("ascii"), **fields}
         return None
 
@@ -252,9 +253,13 @@ class FTPRequests:
         if command == b"RETR":
             changing = any(c in FTP_DIRECTORY_CHANGES or c in FTP_SESSION_CHANGES for c, _ in self.pending)
             path = ftp_path(argument, None if changing else self.cwd)
-            if path is not None:
-                return {"openedr_application_protocol": "ftp", "openedr_request_method": "RETR",
-                        "openedr_request_path": path, "openedr_request_path_scope": "absolute" if path.startswith("/") else "relative"}
+            fields = {"openedr_application_protocol": "ftp", "openedr_request_method": "RETR"}
+            if path is None:
+                fields["openedr_request_path_scope"] = "unavailable"
+            else:
+                fields["openedr_request_path"] = path
+                fields["openedr_request_path_scope"] = "absolute" if path.startswith("/") else "relative"
+            return fields
         return None
 
     def reply(self, line):
