@@ -100,6 +100,7 @@ def run_backend(command, descriptors, status_fd, timeout, on_created):
 
     observer = None
     try:
+        spawn_ns = time.monotonic_ns()
         with subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             pass_fds=descriptors, env={"PATH": "/usr/bin"},
@@ -119,6 +120,11 @@ def run_backend(command, descriptors, status_fd, timeout, on_created):
                     # A short-lived child can write the status and exit between reads.
                     identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
                 if identity is not None:
+                    identity.update({
+                        "openedr_containment_monitor_pid": process.pid,
+                        "openedr_containment_fork_after_ns": spawn_ns,
+                        "openedr_containment_fork_before_ns": time.monotonic_ns(),
+                    })
                     worker = threading.Thread(target=observe, args=(identity,))
                     worker.start()
                     observer = worker

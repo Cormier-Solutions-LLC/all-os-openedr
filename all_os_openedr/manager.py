@@ -12,6 +12,8 @@ from urllib.error import URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
+from .process_tree import containment_process_tree
+
 EVENT_FIELDS = (
     "openedr_source", "openedr_schema", "openedr_event", "openedr_event_id",
     "openedr_host", "openedr_observed_at", "openedr_pid", "openedr_process",
@@ -25,6 +27,7 @@ CONTAINMENT_FIELDS = EVENT_FIELDS + (
 )
 CONTAINMENT_EVENTS = ("executable.sandbox_created", "executable.launch_decision")
 CONTAINMENT_ROUTE = re.compile(r"/v1/containment/([0-9a-f]{32})")
+PROCESSES_ROUTE = re.compile(r"/v1/containment/([0-9a-f]{32})/processes")
 MAX_RESPONSE = 1024 * 1024
 
 
@@ -67,22 +70,9 @@ class Index:
             ]
         elif size:
             query["sort"] = [{"timestamp": {"order": "desc", "unmapped_type": "date"}}]
-        options = urlencode({"ignore_unavailable": "true", "allow_partial_search_results": "false"})
-        request = Request(
-            f"{self.base}/_search?{options}",
-            data=json.dumps(query).encode(),
-            headers={"Authorization": self.authorization, "Content-Type": "application/json"},
-        )
-        with self.client.open(request, timeout=3) as response:
-            data = response.read(MAX_RESPONSE + 1)
-        if len(data) > MAX_RESPONSE:
-            raise ValueError("OpenSearch response exceeds size limit")
         records = []
-        payload = json.loads(data)
-        if payload.get("timed_out"):
-            raise ValueError("OpenSearch search timed out")
-        for hit in payload["hits"]["hits"]:
-            event = hit["_source"].get("data", {})
+        for source in self.execute(query):
+            event = source.get("data", {})
             if event.get("openedr_source") != "all-os-openedr":
                 continue
             if launch_id is not None and (event.get("openedr_containment_launch_id") != launch_id
@@ -90,6 +80,22 @@ class Index:
                 continue
             records.append({field: event[field] for field in fields if field in event})
         return records
+
+    def execute(self, query, *, timeout=3):
+        options = urlencode({"ignore_unavailable": "true", "allow_partial_search_results": "false"})
+        request = Request(
+            f"{self.base}/_search?{options}",
+            data=json.dumps(query).encode(),
+            headers={"Authorization": self.authorization, "Content-Type": "application/json"},
+        )
+        with self.client.open(request, timeout=timeout) as response:
+            data = response.read(MAX_RESPONSE + 1)
+        if len(data) > MAX_RESPONSE:
+            raise ValueError("OpenSearch response exceeds size limit")
+        payload = json.loads(data)
+        if payload.get("timed_out"):
+            raise ValueError("OpenSearch search timed out")
+        return [hit["_source"] for hit in payload["hits"]["hits"]]
 
 
 class Manager(BaseHTTPRequestHandler):
@@ -114,7 +120,8 @@ class Manager(BaseHTTPRequestHandler):
             self.reply(200, {"status": "ok"})
             return
         containment = CONTAINMENT_ROUTE.fullmatch(self.path)
-        if self.path not in ("/readyz", "/v1/events") and containment is None:
+        processes = PROCESSES_ROUTE.fullmatch(self.path)
+        if self.path not in ("/readyz", "/v1/events") and containment is None and processes is None:
             self.reply(404)
             return
         ready = self.path == "/readyz"
@@ -124,14 +131,17 @@ class Manager(BaseHTTPRequestHandler):
                 self.reply(401)
                 return
         try:
-            if containment is None:
-                events = self.server.index.search(0 if ready else 25)
+            if processes is not None:
+                payload = containment_process_tree(self.server.index, processes[1])
+            elif containment is not None:
+                payload = {"events": self.server.index.search(4, launch_id=containment[1])}
             else:
-                events = self.server.index.search(4, launch_id=containment[1])
+                events = self.server.index.search(0 if ready else 25)
+                payload = {"status": "ready"} if ready else {"events": events}
         except (AttributeError, OSError, URLError, KeyError, TypeError, ValueError):
             self.reply(503, {"status": "unavailable"})
             return
-        self.reply(200, {"status": "ready"} if ready else {"events": events})
+        self.reply(200, payload)
 
 
 def main():
