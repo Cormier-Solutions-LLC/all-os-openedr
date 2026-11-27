@@ -33,7 +33,7 @@ SENSORS = {
     "dns": "all-os-openedr-dns.service",
     "protocol": "all-os-openedr-protocol.service",
 }
-HEALTHY_SENSOR_STATES = {"active", "disabled", "masked", "not_installed"}
+HEALTHY_SENSOR_STATES = {"active", "disabled", "masked"}
 
 
 def broker_health():

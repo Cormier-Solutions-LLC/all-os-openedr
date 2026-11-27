@@ -1283,16 +1283,21 @@ with TemporaryDirectory() as temporary:
         state_file.chmod(0o666)
         assert forwarder_health() == "state_invalid"
 with patch("all_os_openedr.endpoint_health.broker_health", return_value=("ready", "enforcing")), \
-        patch("all_os_openedr.endpoint_health.forwarder_health", side_effect=("disconnected", "connected", "connected")), \
+        patch("all_os_openedr.endpoint_health.forwarder_health", return_value="connected"), \
         patch("all_os_openedr.endpoint_health.sensor_health",
-              side_effect=({"tcp": "active"}, {"tcp": "active"}, {"tcp": "inactive", "dns": "disabled"})):
-    degraded = sample()
+              side_effect=({"tcp": "active"}, {"tcp": "active", "dns": "disabled"},
+                           {"tcp": "inactive", "dns": "disabled"}, {"tcp": "not_installed", "dns": "masked"})):
+    with patch("all_os_openedr.endpoint_health.forwarder_health", return_value="disconnected"):
+        degraded = sample()
     assert degraded["openedr_health_status"] == "degraded" and degraded["openedr_health_ima"] == "enforcing"
     assert sample()["openedr_health_status"] == "ready"
     sensor_failure = sample()
     assert sensor_failure["openedr_health_status"] == sensor_failure["openedr_health_sensors"] == "degraded"
     assert sensor_failure["openedr_health_sensor_tcp"] == "inactive"
     assert sensor_failure["openedr_health_sensor_dns"] == "disabled"
+    missing_sensor = sample()
+    assert missing_sensor["openedr_health_sensors"] == "degraded"
+    assert missing_sensor["openedr_health_sensor_tcp"] == "not_installed"
 sensor_cases = {
     "tcp": ("loaded", "enabled", "active", "running"),
     "dns": ("loaded", "disabled", "inactive", "dead"),
