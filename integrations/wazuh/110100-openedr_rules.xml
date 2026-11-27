@@ -32,6 +32,13 @@
     <options>no_full_log</options>
     <group>openedr_response,</group>
   </rule>
+  <rule id="110125" level="8">
+    <if_sid>110100</if_sid>
+    <field name="openedr_event" type="pcre2">^response\.file_quarantine$</field>
+    <description>All OS OpenEDR file quarantine audit event</description>
+    <options>no_full_log</options>
+    <group>openedr_response,</group>
+  </rule>
   <rule id="110105" level="3">
     <if_sid>110100</if_sid>
     <field name="openedr_event" type="pcre2">^file\.(access|modify|metadata_change|close_write|close_readonly|open|create|delete|open_exec|rename)$</field>

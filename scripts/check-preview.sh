@@ -45,7 +45,7 @@ from all_os_openedr.manager import ACTIVITY_ROUTE, CONTAINMENT_ROUTE, PROCESSES_
 from all_os_openedr.plugins import API_VERSION, Plugin, Registry
 from all_os_openedr.proc_connector import CONNECTOR, EXEC, EXIT, FORK, NETLINK, PROC, Lifecycle, StreamGap, proc_records
 from all_os_openedr.process_tree import containment_process_tree
-from all_os_openedr.response import apply, decode_token
+from all_os_openedr.response import apply, decode_token, move_without_replacing
 from all_os_openedr.sandbox_audit import ActivityBudget, parse_event as parse_sandbox_activity
 from all_os_openedr.samba_policy import export_directory, render_share, share_name
 
@@ -422,6 +422,42 @@ approval = {
 }
 encoded = base64.urlsafe_b64encode(json.dumps(approval).encode()).decode()
 assert decode_token(f"v1.{encoded}.")[0] == approval
+quarantine_approval = {
+    **approval, "action": "quarantine", "path": "tools/program file",
+    "volume": "a431703b-1fb1-43c3-9344-4cfac8e9ef6c", "sha256": "d" * 64,
+}
+for request in (quarantine_approval, {**quarantine_approval, "action": "restore"}):
+    payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
+    assert decode_token(f"v1.{payload}.")[0] == request
+for fields in (
+    {"path": "/etc/passwd"}, {"path": "tools/../program"}, {"path": "tools//program"},
+    {"path": ".openedr-quarantine/another-file"}, {"sha256": "abc"}, {"volume": "other"},
+    {"seconds": 10}, {"action": "release"},
+):
+    request = {**quarantine_approval, **fields}
+    payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
+    try:
+        decode_token(f"v1.{payload}.")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"Accepted an invalid file response target: {fields}")
+with TemporaryDirectory() as directory, patch("all_os_openedr.response.trusted_file"):
+    source = Path(directory, "source")
+    destination = Path(directory, "destination")
+    source.write_bytes(b"held file")
+    destination.write_bytes(b"replacement")
+    initial = source.stat()
+    try:
+        move_without_replacing(source, destination, initial)
+    except ValueError as error:
+        assert str(error) == "quarantine_destination_exists"
+    else:
+        raise AssertionError("File response overwrote a destination")
+    assert source.read_bytes() == b"held file" and destination.read_bytes() == b"replacement"
+    destination.unlink()
+    move_without_replacing(source, destination, initial)
+    assert destination.stat().st_ino == initial.st_ino and not source.exists()
 with patch("all_os_openedr.response.owned_table", return_value=("c" * 32, True)), \
      patch("all_os_openedr.response.time.time_ns", return_value=approval["issued_ms"] * 1_000_000), \
      patch("all_os_openedr.response.nft") as firewall:
@@ -849,6 +885,8 @@ for key, field_type in (
     ("openedr_missing_events", "long"),
     ("openedr_response_lease", "keyword"),
     ("openedr_response_deadline_ms", "long"),
+    ("openedr_response_file_sha256", "keyword"),
+    ("openedr_response_volume_uuid", "keyword"),
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),
@@ -925,6 +963,8 @@ test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-ima-audit"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
+sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
+    "$work/package/usr/bin/all-os-openedr-response" | sh -s -- sign --help >/dev/null
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml \
