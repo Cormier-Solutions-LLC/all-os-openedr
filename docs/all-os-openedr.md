@@ -62,7 +62,7 @@ sudo apt install python3-pyudev
 sudo systemctl enable --now all-os-openedr-removable-storage.service
 ```
 
-The collector records USB block disks, other disks Linux flags as removable, and their partitions. It reports attachment, removal, and mounts visible in the service's mount namespace. Startup snapshots use `device.present` and `device.mount_present`. A hash of the media's reported serial or WWN identifies it across connections. Serial-less media uses an attachment-scoped ID. Treat the identity as reported inventory data when investigating a device. Mount observations reflect the current mount table, so short transitions can coalesce.
+The collector records USB block disks, other disks Linux flags as removable, and their partitions. USB monitoring requires a kernel with the USB controller and mass-storage drivers. Debian's standard kernel provides those drivers for this workflow. The collector reports attachment, removal, and mounts visible in its mount namespace. Startup snapshots use `device.present` and `device.mount_present`. A hash of the media's reported serial or WWN identifies it across connections. Serial-less media uses an attachment-scoped ID. Treat the identity as reported inventory data when investigating a device. Mount observations reflect the current mount table, so short transitions can coalesce.
 
 Add the [removable storage localfile stanza](../integrations/wazuh/removable-storage-localfile.xml) to the endpoint and reload the [OpenEDR rules](../integrations/wazuh/110100-openedr_rules.xml) on the manager. Rule `110131` records device and mount observations. Rule `110132` records lost monitor continuity. Apply OpenSearch template version 18 to new dedicated indices or add the corresponding mappings to active ones.
 
