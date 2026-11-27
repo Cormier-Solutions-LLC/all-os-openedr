@@ -14,11 +14,15 @@ import hashlib
 import json
 import os
 import re
+import select
 import socket
 import struct
+import subprocess
 import sys
+import threading
 import uuid
 from argparse import ArgumentTypeError
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -28,7 +32,7 @@ from xml.etree import ElementTree
 
 from all_os_openedr.apparmor_policy import policy_path, profile_name, render_profile
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
-from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status, sandbox_identity, script_shell
+from all_os_openedr.containment import LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_shell
 from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
@@ -452,6 +456,39 @@ assert sandbox_identity(status) == {"openedr_containment_pid": 456, "openedr_con
 assert sandbox_identity(status.splitlines()[0]) is None
 assert sandbox_identity(b'{"child-pid":true}\n') is None
 assert sandbox_identity(b'{"child-pid":456,"pid-namespace":true}\n') == {"openedr_containment_pid": 456}
+audit_started = threading.Event()
+audit_release = threading.Event()
+identity = {}
+
+
+def stalled_audit(created):
+    identity.update(created)
+    audit_started.set()
+    audit_release.wait(10)
+
+
+with os.fdopen(os.memfd_create("openedr-verify-status", os.MFD_CLOEXEC), "rb") as status_file:
+    fd = status_file.fileno()
+    child = ("import json, os, sys, time; "
+             "os.write(int(sys.argv[1]), (json.dumps({'child-pid': os.getpid()}) + chr(10)).encode()); "
+             "time.sleep(30)")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        backend = executor.submit(run_backend, [sys.executable, "-c", child, str(fd)], (fd,), fd, 2, stalled_audit)
+        try:
+            assert audit_started.wait(4)
+            pidfd = os.pidfd_open(identity["openedr_containment_pid"])
+            try:
+                assert select.select([pidfd], [], [], 4)[0], "A blocked audit write extended the sandbox deadline"
+            finally:
+                os.close(pidfd)
+        finally:
+            audit_release.set()
+        try:
+            backend.result(5)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError("The expired backend returned normal completion")
 launch_id = "a" * 32
 assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id)
 assert CONTAINMENT_ROUTE.fullmatch("/v1/containment/" + launch_id + "?id=other") is None

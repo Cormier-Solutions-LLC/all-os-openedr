@@ -10,6 +10,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import suppress
@@ -93,31 +94,42 @@ def sandbox_identity(data):
 
 
 def run_backend(command, descriptors, status_fd, timeout, on_created):
-    with subprocess.Popen(
-        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        pass_fds=descriptors, env={"PATH": "/usr/bin"},
-    ) as process:
-        deadline = time.monotonic() + timeout
-        identity = None
-        try:
-            while process.poll() is None:
-                identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
+    def observe(identity):
+        with suppress(OSError):
+            on_created(identity)
+
+    observer = None
+    try:
+        with subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            pass_fds=descriptors, env={"PATH": "/usr/bin"},
+        ) as process:
+            deadline = time.monotonic() + timeout
+            identity = None
+            try:
+                while process.poll() is None:
+                    identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
+                    if identity is not None:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    time.sleep(min(0.05, remaining))
+                if identity is None:
+                    # A short-lived child can write the status and exit between reads.
+                    identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
                 if identity is not None:
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(command, timeout)
-                time.sleep(min(0.05, remaining))
-            if identity is None:
-                # A short-lived child can write the status and exit between reads.
-                identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
-            if identity is not None:
-                with suppress(OSError):
-                    on_created(identity)
-            return process.wait(timeout=max(0, deadline - time.monotonic()))
-        finally:
-            if process.poll() is None:
-                process.kill()
+                    worker = threading.Thread(target=observe, args=(identity,))
+                    worker.start()
+                    observer = worker
+                return process.wait(timeout=max(0, deadline - time.monotonic()))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+    finally:
+        # The subprocess is gone before waiting for the audit sink. Preserve record order.
+        if observer is not None:
+            observer.join()
 
 
 def script_shell(snapshot):
