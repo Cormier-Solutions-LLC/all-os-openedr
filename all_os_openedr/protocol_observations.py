@@ -22,7 +22,6 @@ OUTPUT = Path("/var/log/all-os-openedr-protocol/events.jsonl")
 CAPTURE_LIMIT = 4096
 FLOW_LIMIT = 1024
 ACCOUNT_FLOW_LIMIT = 128
-IDLE_NS = 120_000_000_000
 SYN, FIN, RST = 1, 2, 4
 MASK = 0xffffffff
 
@@ -102,7 +101,6 @@ class Stream:
 class Flow:
     def __init__(self, packet):
         self.endpoint = packet.tuple()
-        self.stamp = packet.stamp
         self.uid = packet.actor.uid
         self.parser = HTTPRequests() if packet.peer_port == 80 else FTPRequests()
         self.streams = (Stream(), Stream())
@@ -116,16 +114,12 @@ class ProtocolTrace(NetworkTrace):
     def __init__(self, boot_id, host, ticks):
         super().__init__(boot_id, host, ticks)
         self.flows = {}
-        self.sweep_at = 0
 
     def receive_packet(self, raw):
         if len(raw) == CLOSED_SOCKET.size:
             self.flows.pop(CLOSED_SOCKET.unpack(raw), None)
             return
         packet, payload = Packet.unpack(raw)
-        if packet.stamp >= self.sweep_at:
-            self.flows = {cookie: flow for cookie, flow in self.flows.items() if packet.stamp - flow.stamp < IDLE_NS}
-            self.sweep_at = packet.stamp + 1_000_000_000
         socket_key = packet.cookie, packet.actor.connected
         flow = self.flows.get(socket_key)
         if flow is None:
@@ -138,7 +132,6 @@ class ProtocolTrace(NetworkTrace):
                 yield self.gap("account_flow_capacity")
                 return
             flow = self.flows[socket_key] = Flow(packet)
-        flow.stamp = max(flow.stamp, packet.stamp)
         try:
             if packet.tuple() != flow.endpoint:
                 raise ValueError("TCP tuple changed on a tracked socket")

@@ -16,6 +16,9 @@ RESPONSE = re.compile(rb"HTTP/1\.[01] ([1-5][0-9]{2})(?: [^\r\n]*)?")
 HOSTNAME = re.compile(r"[A-Za-z0-9._-]{1,253}")
 FTP_COMMAND = re.compile(rb"([A-Za-z]{3,4})(?: ([^\r\n]*))?")
 FTP_REPLY = re.compile(rb"([1-5][0-9]{2})([ -])(.*)")
+FTP_DIRECTORY_CHANGES = {b"CWD", b"XCWD", b"CDUP", b"XCUP"}
+FTP_SESSION_CHANGES = {b"USER", b"PASS", b"ACCT", b"REIN"}
+FTP_CONTEXT_COMMANDS = FTP_DIRECTORY_CHANGES | FTP_SESSION_CHANGES | {b"PWD", b"XPWD", b"AUTH"}
 
 
 def authority(value):
@@ -241,13 +244,13 @@ class FTPRequests:
         command, argument = match[1].upper(), match[2] or b""
         if len(self.pending) >= 64:
             raise ValueError("FTP command queue exceeds the observation bound")
-        if command in {b"CWD", b"XCWD", b"CDUP", b"XCUP", b"PWD", b"XPWD", b"REIN", b"AUTH"}:
+        if command in FTP_CONTEXT_COMMANDS:
             path = argument if command in {b"CWD", b"XCWD"} and len(argument) <= PATH_LIMIT else b""
             self.pending.append((command, path))
         else:
             self.pending.append((b"", b""))
         if command == b"RETR":
-            changing = any(c in {b"CWD", b"XCWD", b"CDUP", b"XCUP", b"REIN"} for c, _ in self.pending)
+            changing = any(c in FTP_DIRECTORY_CHANGES or c in FTP_SESSION_CHANGES for c, _ in self.pending)
             path = ftp_path(argument, None if changing else self.cwd)
             if path is not None:
                 return {"openedr_application_protocol": "ftp", "openedr_request_method": "RETR",
@@ -273,6 +276,8 @@ class FTPRequests:
             return
         if self.pending:
             command, argument = self.pending.popleft()
+            if command in FTP_SESSION_CHANGES:
+                self.cwd = None
             if not code.startswith(b"2"):
                 return
             if command == b"AUTH" and code == b"234":
@@ -287,8 +292,6 @@ class FTPRequests:
                 path = re.match(rb'"((?:[^"]|"")*)"', message)
                 new = ftp_path(path[1].replace(b'""', b'"')) if path else None
                 self.cwd = new if new and new.startswith("/") else None
-            elif command == b"REIN" and code == b"220":
-                self.cwd = None
 
     def feed(self, incoming, data):
         if self.opaque:

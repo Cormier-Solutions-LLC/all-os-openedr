@@ -658,6 +658,18 @@ assert list(ftp.feed(1, b"226 Complete\r\n")) == []
 request, = ftp.feed(0, b"RETR link/../item\r\n")
 assert request["openedr_request_path"] == "/base/pub/link/../item"
 assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+assert list(ftp.feed(0, b"USER other\r\nPASS secret\r\n")) == []
+request, = ftp.feed(0, b"RETR pending\r\n")
+assert request["openedr_request_path"] == "pending" and request["openedr_request_path_scope"] == "relative"
+assert list(ftp.feed(1, b"331 Username okay\r\n230 Logged in\r\n226 Complete\r\n")) == []
+request, = ftp.feed(0, b"RETR after-login\r\n")
+assert request["openedr_request_path"] == "after-login" and request["openedr_request_path_scope"] == "relative"
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+assert list(ftp.feed(0, b"PWD\r\n")) == []
+assert list(ftp.feed(1, b'257 "/new-home"\r\n')) == []
+request, = ftp.feed(0, b"RETR after-pwd\r\n")
+assert request["openedr_request_path"] == "/new-home/after-pwd"
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
 assert list(ftp.feed(0, b"CDUP\r\n")) == []
 assert list(ftp.feed(1, b"250 Directory changed\r\n")) == []
 request, = ftp.feed(0, b"RETR ../new\r\n")
@@ -688,10 +700,15 @@ def protocol_feed(sequence, data=b"", flags=0):
 assert protocol_feed(0xfffffffc, flags=SYN) == []
 assert protocol_feed(0xfffffffd, b"GET /") == []
 assert protocol_feed(0xfffffffd, b"GET /") == []
-observed, = protocol_feed(2, b"example HTTP/1.1\r\nHost: example.test\r\n\r\n")
+last_segment = b"example HTTP/1.1\r\nHost: example.test\r\n\r\n"
+observed, = protocol_feed(2, last_segment)
 assert observed["openedr_file_actor_id"] == started["openedr_file_actor_id"]
 assert observed["openedr_request_path"] == "/example"
 assert observed["openedr_network_attribution"] == "socket_connect_actor"
+packet.stamp += 121_000_000_000
+resumed, = protocol_feed(2 + len(last_segment), b"GET /after-idle HTTP/1.1\r\n\r\n")
+assert resumed["openedr_request_path"] == "/after-idle"
+assert resumed["openedr_network_socket_id"] == observed["openedr_network_socket_id"]
 assert list(protocol.receive_packet(CLOSED_SOCKET.pack(packet.cookie, packet.actor.connected))) == []
 assert not protocol.flows
 packet.actor.connected += 1
