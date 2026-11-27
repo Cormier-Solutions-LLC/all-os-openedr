@@ -34,6 +34,25 @@ Merge the packaged `lifecycle-localfile.xml` into the Wazuh agent and install th
 
 The dedicated OpenSearch template indexes process and parent identities, stream IDs, exit wait status, and gap information. Install the updated template before creating new lifecycle indices. For an existing index, apply the additive fields to its mapping. Reindex lifecycle documents already stored before that mapping update if they need to participate in those queries. [OpenSearch explicit mappings](https://docs.opensearch.org/latest/mappings/)
 
+### Investigate TCP connections
+
+Enable the optional sensor on Debian 13 amd64 with the standard BTF-enabled kernel. Run it in the host PID and time namespaces.
+
+~~~sh
+sudo apt install bpftrace
+sudo systemctl enable --now all-os-openedr-tcp.service
+sudo systemctl status all-os-openedr-tcp.service
+sudo tail /var/log/all-os-openedr-tcp/events.jsonl
+~~~
+
+The sensor records IPv4 and IPv6 TCP connect attempts that reach the kernel transmit path, outbound establishment, inbound acceptance, listening sockets, and TCP closure. It records local and remote addresses and ports where applicable. Direction describes the process's socket operation. Asynchronous events retain the identity of the connecting, accepting, or listening process. An outbound attempt followed by closure without establishment can also occur on connection refusal.
+
+Use the Wazuh agent ID, boot ID, and `openedr_network_socket_id` to reconstruct a socket's timeline. Use `openedr_network_monotonic_ns` for event ordering and `openedr_network_namespace` to distinguish network namespaces. Match `openedr_file_actor_id` within the same agent and boot to join socket activity to file provenance. The process name is the group leader's kernel task name at capture time.
+
+The service tracks socket activity observed after it starts. A listening socket can outlive the process that called listen, and an accepted socket may have lost its peer before acceptance. Early connect failures that never enter TCP transmission, UDP, DNS, and application protocol metadata remain outside this preview. The sensor reads endpoint metadata without accessing packet payloads, including during encrypted TCP connections. [Linux TCP state handling](https://raw.githubusercontent.com/torvalds/linux/v6.12/net/ipv4/tcp.c) · [Debian bpftrace](https://manpages.debian.org/trixie/bpftrace/bpftrace.8.en.html)
+
+Add the packaged `tcp-localfile.xml` to the endpoint and update `110100-openedr_rules.xml` on the Wazuh manager. Rule `110135` records TCP activity and rule `110136` reports detected evidence gaps. Apply OpenSearch template version 20 to new dedicated indices or add its TCP fields to active mappings. The local log holds a current 16 MiB file and three backups. The service limits normal output to 128 records per second and reports detected buffer loss, tracking capacity, and output rate limits. Verify that your log collector follows the active file after rotation. [Wazuh localfile reference](https://documentation.wazuh.com/current/user-manual/reference/ossec-conf/localfile.html)
+
 ### Trace file activity on a mounted filesystem
 
 The optional Debian file provenance service monitors an explicitly chosen filesystem recursively. It reports opens, accesses, modifications, metadata changes, closes, creations, deletions, execution opens, and renames. File IDs are derived from the boot, filesystem, and Linux file handle. Renames carry the kernel-reported source and destination names when both directory entries are available. Display paths use directory handles resolved at collection time. Use the file ID to follow a file through path changes.

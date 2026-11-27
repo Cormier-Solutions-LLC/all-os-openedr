@@ -2,6 +2,7 @@
 
 ## 0.6.0 preview
 
+- Add opt-in kernel TCP connection evidence for IPv4 and IPv6 on Debian 13 amd64, with direction, process identity, socket lifetime, and Wazuh rules.
 - Let enrolled Debian users open a selected executable in containment from the command line or a desktop application entry without administrator staging.
 - Require IMA signatures for native execution and executable mappings of non-root-owned files by selected Debian users beyond the managed execution volume.
 - Save a bounded export from a successful Debian containment session to a new user-selected file without granting the sandbox access to the destination.
