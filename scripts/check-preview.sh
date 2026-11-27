@@ -37,7 +37,8 @@ from all_os_openedr.apparmor_policy import policy_path, profile_name, render_pro
 from all_os_openedr.audit_rules import config_target, executable, login_uid, render_config_rules, render_rules
 from all_os_openedr.containment import IMMUTABLE_SEALS, LAUNCH_FAILED, has_volume_approval, launch, namespace_status, run_backend, sandbox_identity, script_runtime
 from all_os_openedr.endpoint_health import broker_health, forwarder_health, sample
-from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, read_catalog
+from all_os_openedr.executable import ExecutableOpen, MAX_EXECUTABLE_SIZE, inspect_descriptor, parse_catalog, read_catalog
+from all_os_openedr.executable_policy import policy_event, update_catalog
 from all_os_openedr.file_provenance import DFID_NAME, FID, INFO_HEADER, METADATA, NEW_DFID_NAME, OLD_DFID_NAME, ON_DIRECTORY, OVERFLOW, RENAME, FileProvenance, decode_events
 from all_os_openedr.ima_audit import parse_failure as parse_ima_failure
 from all_os_openedr.ima_policy import IMA_ATTRIBUTE, IMA_SHA256_PREFIX, approve as ima_approve, policy_rules, revoke as ima_revoke, select_filesystem
@@ -417,6 +418,45 @@ else:
 response_feed = ElementTree.parse(integration / "response-localfile.xml")
 assert response_feed.findtext("location") == "/var/log/all-os-openedr-response/actions.jsonl"
 assert response_feed.findtext("log_format") == "json"
+policy_catalog = {"schema": 2, "target": "a" * 32, "revision": 7, "signer": "fleet-policy",
+                  "verdicts": {"b" * 64: "untrusted"}}
+policy_payload = json.dumps(policy_catalog).encode()
+assert parse_catalog(policy_payload) == policy_catalog
+for invalid in (b'{"schema":1,"schema":1,"verdicts":{}}',
+                json.dumps({**policy_catalog, "revision": True}).encode(),
+                json.dumps({**policy_catalog, "target": "other-endpoint"}).encode(),
+                json.dumps({**policy_catalog, "verdicts": {"b" * 64: "other"}}).encode()):
+    try:
+        parse_catalog(invalid)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An invalid policy catalog was accepted")
+with TemporaryDirectory() as temporary:
+    catalog_path = Path(temporary) / "catalog"
+    catalog_path.write_bytes(b'{"schema":1,"verdicts":{}}')
+    sensor = ExecutableOpen.__new__(ExecutableOpen)
+    sensor.catalog, sensor.catalog_version, sensor.catalog_id, sensor.verdicts = catalog_path, None, None, {}
+
+    def read_sample_catalog(path):
+        data = path.read_bytes()
+        return hashlib.sha256(data).hexdigest(), parse_catalog(data)["verdicts"]
+
+    with patch("all_os_openedr.executable.read_catalog", side_effect=read_sample_catalog) as read, \
+            patch("all_os_openedr.executable_policy.CATALOG", catalog_path):
+        sensor.refresh_catalog()
+        sensor.refresh_catalog()
+        read.assert_called_once_with(catalog_path)
+        with catalog_path.open("rb") as previous:
+            update_catalog(policy_payload)
+            assert parse_catalog(previous.read())["schema"] == 1
+        sensor.refresh_catalog()
+        assert read.call_count == 2 and sensor.verdicts == policy_catalog["verdicts"]
+        assert sensor.catalog_id == hashlib.sha256(policy_payload).hexdigest()
+policy_feed = ElementTree.parse(integration / "policy-localfile.xml")
+assert policy_feed.findtext("location") == "/var/log/all-os-openedr-policy/changes.jsonl"
+policy_receipt = policy_event("applied", policy_catalog["target"], policy_catalog, hashlib.sha256(policy_payload).hexdigest())
+assert policy_receipt["openedr_policy_revision"] == 7 and policy_receipt["openedr_policy_signer"] == "fleet-policy"
 approval = {
     "action": "release", "endpoint": "a" * 32, "agent": "001", "lease": "b" * 32,
     "alert": "1750012345.1234", "signer": "incident-operator", "issued_ms": 1750012345000, "seconds": 0,
@@ -934,6 +974,8 @@ containment = ElementTree.parse(integration / "containment-localfile.xml")
 assert containment.findtext("location") == "/var/log/all-os-openedr-containment/launches.jsonl"
 assert containment.findtext("log_format") == "json"
 launch_rules = ElementTree.parse(integration / "110100-openedr_rules.xml")
+assert re.fullmatch(launch_rules.findtext("rule[@id='110129']/field"), policy_receipt["openedr_event"])
+assert launch_rules.findtext("rule[@id='110130']/if_sid") == "110129"
 assert re.fullmatch(launch_rules.findtext("rule[@id='110127']/field"), degraded["openedr_event"])
 assert re.fullmatch(launch_rules.findtext("rule[@id='110128']/field"), degraded["openedr_health_status"])
 assert launch_rules.findtext("rule[@id='110128']/if_sid") == "110127"
@@ -982,6 +1024,11 @@ for key, field_type in (
     ("openedr_health_broker", "keyword"),
     ("openedr_health_ima", "keyword"),
     ("openedr_health_forwarder", "keyword"),
+    ("openedr_policy_revision", "long"),
+    ("openedr_policy_signer", "keyword"),
+    ("openedr_policy_result", "keyword"),
+    ("openedr_policy_target", "keyword"),
+    ("openedr_policy_reason", "keyword"),
     ("openedr_file_actor_id", "keyword"),
     ("openedr_file_object_id", "keyword"),
     ("openedr_file_mask", "long"),
@@ -1068,6 +1115,9 @@ test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-ima-audit"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
+test -x "$work/package/usr/bin/all-os-openedr-executable-policy"
+sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
+    "$work/package/usr/bin/all-os-openedr-executable-policy" | sh -s -- apply --help >/dev/null
 test -x "$work/package/usr/bin/all-os-openedr-health"
 for unit in all-os-openedr-health.service all-os-openedr-health.timer; do
     cmp "packaging/debian/$unit" "$work/package/usr/lib/systemd/system/$unit"
@@ -1078,7 +1128,7 @@ sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
     "$work/package/usr/bin/all-os-openedr-response" | sh -s -- sign --help >/dev/null
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
-    lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml \
+    lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml health-localfile.xml policy-localfile.xml \
     110100-openedr_rules.xml all-os-openedr-response \
     openedr-samba_decoders.xml 110114-openedr-samba_rules.xml; do
     cmp "integrations/wazuh/$filename" "$work/package/usr/share/all-os-openedr/wazuh/$filename"
