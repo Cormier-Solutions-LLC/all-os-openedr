@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/python3 -IB -c 'import sys; sys.path.insert(0, "/usr/lib/all-os-openedr"); from all_os_openedr.launch_broker import service_main; raise SystemExit(service_main())'
