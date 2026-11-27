@@ -165,9 +165,12 @@ def ftp_path(value, cwd=None):
     if not value or len(value) > PATH_LIMIT or b"://" in value or any(byte < 32 or byte == 127 for byte in value):
         return None
     path = value.decode("utf-8", errors="backslashreplace")
-    if path.startswith("/"):
-        return posixpath.normpath(path)
-    return posixpath.normpath(posixpath.join(cwd, path)) if cwd else path
+    if len(path.encode("utf-8")) > PATH_LIMIT:
+        return None
+    if path.startswith("/") or not cwd:
+        return path
+    combined = posixpath.join(cwd, path)
+    return combined if len(combined.encode("utf-8")) <= PATH_LIMIT else path
 
 
 class FTPRequests:
@@ -228,16 +231,16 @@ class FTPRequests:
             command, argument = self.pending.popleft()
             if not code.startswith(b"2"):
                 return
-            if command in {b"CWD", b"XCWD"}:
+            if command in {b"CWD", b"XCWD"} and code == b"250":
                 new = ftp_path(argument, self.cwd)
                 self.cwd = new if new and new.startswith("/") else None
-            elif command in {b"CDUP", b"XCUP"} and self.cwd:
-                self.cwd = posixpath.dirname(self.cwd)
+            elif command in {b"CDUP", b"XCUP"} and code in {b"200", b"250"}:
+                self.cwd = None
             elif command in {b"PWD", b"XPWD"} and code == b"257":
                 path = re.match(rb'"((?:[^"]|"")*)"', message)
                 new = ftp_path(path[1].replace(b'""', b'"')) if path else None
                 self.cwd = new if new and new.startswith("/") else None
-            elif command == b"REIN":
+            elif command == b"REIN" and code == b"220":
                 self.cwd = None
 
     def feed(self, incoming, data):

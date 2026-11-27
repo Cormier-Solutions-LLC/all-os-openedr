@@ -642,6 +642,14 @@ for direction, chunk in (
 request, = ftp.feed(0, b"TR item\r\n")
 assert request == {"openedr_application_protocol": "ftp", "openedr_request_method": "RETR",
                    "openedr_request_path": "/base/pub/item", "openedr_request_path_scope": "absolute"}
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+request, = ftp.feed(0, b"RETR link/../item\r\n")
+assert request["openedr_request_path"] == "/base/pub/link/../item"
+assert list(ftp.feed(1, b"226 Complete\r\n")) == []
+assert list(ftp.feed(0, b"CDUP\r\n")) == []
+assert list(ftp.feed(1, b"250 Directory changed\r\n")) == []
+request, = ftp.feed(0, b"RETR ../new\r\n")
+assert request["openedr_request_path"] == "../new" and request["openedr_request_path_scope"] == "relative"
 assert list(ftp.feed(0, b"AUTH TLS\r\nRETR secret\r\n")) == []
 assert list(ftp.feed(0, b"RETR secret\r\n")) == []
 protocol = ProtocolTrace("boot", "host", 100)
