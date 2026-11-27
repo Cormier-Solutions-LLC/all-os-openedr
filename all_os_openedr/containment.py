@@ -93,22 +93,29 @@ def sandbox_identity(data):
     return identity
 
 
-def run_backend(command, descriptors, status_fd, timeout, on_created):
+class ClientDisconnected(Exception):
+    """The local client ended an interactive launch session."""
+
+
+def run_backend(command, descriptors, status_fd, timeout, on_created, *, streams=None, cancelled=None):
     def observe(identity):
         with suppress(OSError):
             on_created(identity)
 
     observer = None
+    stdin, stdout = streams if streams is not None else (subprocess.DEVNULL, subprocess.DEVNULL)
     try:
         spawn_ns = time.monotonic_ns()
         with subprocess.Popen(
-            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            command, stdin=stdin, stdout=stdout, stderr=stdout,
             pass_fds=descriptors, env={"PATH": "/usr/bin"},
         ) as process:
             deadline = time.monotonic() + timeout
             identity = None
             try:
                 while process.poll() is None:
+                    if cancelled is not None and cancelled():
+                        raise ClientDisconnected
                     identity = sandbox_identity(os.pread(status_fd, STATUS_LIMIT, 0))
                     if identity is not None:
                         break
@@ -128,7 +135,18 @@ def run_backend(command, descriptors, status_fd, timeout, on_created):
                     worker = threading.Thread(target=observe, args=(identity,))
                     worker.start()
                     observer = worker
-                return process.wait(timeout=max(0, deadline - time.monotonic()))
+                if cancelled is None:
+                    return process.wait(timeout=max(0, deadline - time.monotonic()))
+                while process.poll() is None:
+                    if cancelled():
+                        raise ClientDisconnected
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    time.sleep(min(0.05, remaining))
+                if cancelled():
+                    raise ClientDisconnected
+                return process.returncode
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -164,7 +182,7 @@ def script_shell(snapshot):
     return shell, tuple(option.decode("ascii") for option in options)
 
 
-def sandbox(snapshot, arguments, timeout, script, on_created):
+def sandbox(snapshot, arguments, timeout, script, on_created, *, streams=None, cancelled=None):
     snapshot.flush()
     snapshot.seek(0)
     fd = snapshot.fileno()
@@ -213,7 +231,10 @@ def sandbox(snapshot, arguments, timeout, script, on_created):
             "--", *entrypoint, *arguments,
         ]
         try:
-            code = run_backend(command, (fd, status_fd, filter_fd), status_fd, timeout, on_created)
+            code = run_backend(command, (fd, status_fd, filter_fd), status_fd, timeout, on_created,
+                               streams=streams, cancelled=cancelled)
+        except ClientDisconnected:
+            return LAUNCH_FAILED, "client_disconnected", None
         except subprocess.TimeoutExpired:
             return LAUNCH_FAILED, "sandbox_timeout", None
         except OSError:
@@ -261,7 +282,7 @@ def emit(event, decision, reason, **details):
     })
 
 
-def launch(options, event, *, delegated=False, reporter=None):
+def launch(options, event, *, delegated=False, reporter=None, streams=None, cancelled=None):
     report = reporter or emit
     volume_device = None
     if delegated and options.execution_volume is None:
@@ -354,7 +375,8 @@ def launch(options, event, *, delegated=False, reporter=None):
                     "openedr_event_id": uuid.uuid4().hex,
                 })
 
-            exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created)
+            exit_code, outcome, pid = sandbox(snapshot, options.arguments, options.timeout, script, on_created,
+                                              streams=streams, cancelled=cancelled)
             details = {**creation, "openedr_containment_exit_code": exit_code}
             if pid is not None:
                 details["openedr_containment_pid"] = pid
