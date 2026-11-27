@@ -4,7 +4,7 @@ This repository preserves the source and history of [ComodoSecurity/openedr](htt
 
 | Component | Current scope |
 | --- | --- |
-| Debian 13 | Versioned package for kernel process tracking, file provenance, removable-storage monitoring and opt-in transfer tracing, configuration monitoring, executable evidence, opt-in managed application containment, IMA and AppArmor enforcement, Samba writer authorization, opt-in TCP connection tracing, and network isolation |
+| Debian 13 | Versioned package for kernel process tracking, file provenance, removable-storage monitoring and opt-in transfer tracing, configuration monitoring, executable evidence, opt-in managed application containment, IMA and AppArmor enforcement, Samba writer authorization, opt-in TCP and DNS tracing, and network isolation |
 | Enterprise Linux and Fedora | RPM source builds with container qualification on Rocky Linux 9 and 10 and Fedora 44 |
 | Arch Linux | Versioned pacman package and opt-in systemd service for x86_64 |
 | Alpine Linux | APK source build and opt-in OpenRC service qualified in Alpine 3.23 and 3.24 containers |

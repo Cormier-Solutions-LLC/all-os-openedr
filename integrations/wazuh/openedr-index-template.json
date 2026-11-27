@@ -1,7 +1,7 @@
 {
   "index_patterns": ["openedr-alerts-v1-*"],
   "priority": 200,
-  "version": 20,
+  "version": 21,
   "template": {
     "mappings": {
       "dynamic": false,
@@ -152,6 +152,7 @@
             "openedr_ima_cause": {"type": "keyword"},
             "openedr_network_socket_id": {"type": "keyword"},
             "openedr_network_direction": {"type": "keyword"},
+            "openedr_network_transport": {"type": "keyword"},
             "openedr_network_namespace": {"type": "long", "coerce": true},
             "openedr_network_monotonic_ns": {"type": "long", "coerce": true},
             "openedr_network_ip_version": {"type": "integer"},
@@ -159,6 +160,8 @@
             "openedr_network_local_port": {"type": "integer"},
             "openedr_network_remote_ip": {"type": "ip"},
             "openedr_network_remote_port": {"type": "integer"},
+            "openedr_dns_name": {"type": "keyword", "ignore_above": 1024},
+            "openedr_dns_type": {"type": "keyword"},
             "openedr_process": {"type": "keyword", "ignore_above": 256}
           }
         }
