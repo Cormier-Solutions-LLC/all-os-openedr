@@ -963,6 +963,8 @@ test -x "$work/package/usr/lib/all-os-openedr/all-os-openedr-ima-audit"
 test -x "$work/package/usr/bin/all-os-openedr-apparmor-policy"
 test -x "$work/package/usr/bin/all-os-openedr-samba-policy"
 test -x "$work/package/usr/bin/all-os-openedr-response"
+sed "s|/usr/lib/all-os-openedr|$work/package/usr/lib/all-os-openedr|g" \
+    "$work/package/usr/bin/all-os-openedr-response" | sh -s -- sign --help >/dev/null
 test -x "$work/package/usr/share/all-os-openedr/wazuh/all-os-openedr-response"
 for filename in audit-localfile.xml 110110-openedr-execution_rules.xml samba-localfile.xml ima-dispatch.conf ima-localfile.xml containment-localfile.xml containment-audit-localfile.xml \
     lifecycle-localfile.xml file-provenance-localfile.xml executable-localfile.xml response-localfile.xml \
