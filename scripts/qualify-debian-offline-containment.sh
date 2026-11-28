@@ -111,8 +111,15 @@ printf '{"schema":1,"verdicts":{"%s":"trusted"}}\n' "$digest" > "$work/approved.
 chmod 0644 "$work/unknown.json" "$work/denied.json" "$work/approved.json"
 
 launch() {
-    runuser -u "$account" -- /usr/bin/all-os-openedr-launch \
-        --catalog "$work/$1.json" --timeout 15 "$work/canary" "$2" "$local_file" "$share_file" 2>"$work/$1.log"
+    decision=$1
+    mode=$2
+    shift 2
+    catalog=$decision
+    if [ "$decision" = backend ]; then catalog=unknown; fi
+    systemd-run --quiet --pipe --wait --collect --uid="$account" --service-type=oneshot \
+        --property=NoNewPrivileges=yes --property=TasksMax=64 --property=MemoryMax=256M "$@" \
+        /usr/bin/all-os-openedr-launch --catalog "$work/$catalog.json" --timeout 15 \
+        "$work/canary" "$mode" "$local_file" "$share_file" 2>"$work/$decision.log"
 }
 compare() {
     runuser -u "$account" -- cmp -- "$work/$1" "$local_file"
@@ -128,9 +135,7 @@ for decision in denied unavailable; do
     fi
     compare baseline
 done
-if systemd-run --quiet --pipe --wait --collect --uid="$account" \
-    --property=InaccessiblePaths=/usr/bin/bwrap /usr/bin/all-os-openedr-launch \
-    --catalog "$work/unknown.json" --timeout 15 "$work/canary" native "$local_file" "$share_file" 2>"$work/backend.log"; then
+if launch backend native --property=InaccessiblePaths=/usr/bin/bwrap; then
     echo "Launcher unexpectedly allowed execution with the sandbox backend unavailable" >&2
     exit 1
 fi
